@@ -46,7 +46,7 @@ function setHtmlAttribute(raw = '', name, value = '') {
 
 function setHtmlImagePresentationAttrs(raw = '', metadata) {
   let updated = raw
-  const alt = metadata.label || metadata.title || metadata.desc
+  const alt = metadata.label || metadata.title || metadata.desc || metadata.tag
 
   if (alt) updated = setHtmlAttribute(updated, 'alt', alt)
   if (metadata.width) updated = setHtmlAttribute(updated, 'width', metadata.width)
@@ -268,7 +268,7 @@ function findFigureAttrs(token, Token) {
 
       if (metadata.width) child.attrSet('width', metadata.width)
 
-      const alt = metadata.label || metadata.title || metadata.desc
+      const alt = metadata.label || metadata.title || metadata.desc || metadata.tag
       if (alt) setImageTokenAlt(child, alt, Token)
 
       return figureAttrsFromMetadata(metadata)
