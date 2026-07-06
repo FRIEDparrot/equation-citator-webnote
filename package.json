@@ -1,0 +1,25 @@
+{
+  "name": "equation-citator",
+  "version": "1.3.5",
+  "description": "Web support for Equation Citator exported citations.",
+  "type": "module",
+  "main": "./src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./markdown-it": "./src/markdown-it.js",
+    "./runtime": "./src/runtime.js"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "peerDependencies": {
+    "markdown-it": ">=13"
+  },
+  "peerDependenciesMeta": {
+    "markdown-it": {
+      "optional": true
+    }
+  },
+  "license": "Apache-2.0"
+}
