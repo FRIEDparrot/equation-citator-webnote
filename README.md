@@ -1,6 +1,8 @@
-# equation-citator
+# equation-citator-webnote
 
 Web support for Equation Citator exported citations.
+
+For the obsidian equation-citator plugin, see https://github.com/FRIEDparrot/obsidian-equation-citator.
 
 This package is designed for pages that already contain Equation Citator exported citation spans:
 

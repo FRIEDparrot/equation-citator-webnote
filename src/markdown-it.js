@@ -33,6 +33,27 @@ function parseHtmlAttributes(raw = '') {
   return attrs
 }
 
+function setHtmlAttribute(raw = '', name, value = '') {
+  const escaped = escapeHtmlAttribute(value)
+  const pattern = new RegExp(`(\\s${name}\\s*=\\s*)(?:"[^"]*"|'[^']*'|[^\\s>]+)`, 'i')
+
+  if (pattern.test(raw)) {
+    return raw.replace(pattern, `$1"${escaped}"`)
+  }
+
+  return raw.replace(/<img\b/i, `<img ${name}="${escaped}"`)
+}
+
+function setHtmlImagePresentationAttrs(raw = '', metadata) {
+  let updated = raw
+  const alt = metadata.label || metadata.title || metadata.desc
+
+  if (alt) updated = setHtmlAttribute(updated, 'alt', alt)
+  if (metadata.width) updated = setHtmlAttribute(updated, 'width', metadata.width)
+
+  return updated
+}
+
 export function parseEquationCitatorFigureLabel(raw = '') {
   const parts = String(raw)
     .split('|')
@@ -228,16 +249,27 @@ function isFigureImageToken(token) {
     )
 }
 
-function findFigureAttrs(token) {
+function setImageTokenAlt(token, alt, Token) {
+  token.content = alt
+  token.attrSet('alt', alt)
+
+  if (!Token) return
+
+  const textToken = makeElementToken(Token, 'text', '', 0)
+  textToken.content = alt
+  token.children = [textToken]
+}
+
+function findFigureAttrs(token, Token) {
   for (const child of token?.children || []) {
     if (child.type === 'image') {
-      const metadata = parseEquationCitatorFigureLabel(child.content)
+      const metadata = parseEquationCitatorFigureLabel(child.content || child.attrGet('alt') || '')
       if (!metadata) continue
 
       if (metadata.width) child.attrSet('width', metadata.width)
 
       const alt = metadata.label || metadata.title || metadata.desc
-      if (alt) child.attrSet('alt', alt)
+      if (alt) setImageTokenAlt(child, alt, Token)
 
       return figureAttrsFromMetadata(metadata)
     }
@@ -246,6 +278,14 @@ function findFigureAttrs(token) {
       const attrs = parseHtmlAttributes(child.content)
       const figureAttrs = normalizeFigureAttrs(attrs)
       if (figureAttrs) return figureAttrs
+
+      if (/^<img\b/i.test(child.content.trim())) {
+        const metadata = parseEquationCitatorFigureLabel(attrs.alt || attrs.title || '')
+        if (!metadata) continue
+
+        child.content = setHtmlImagePresentationAttrs(child.content, metadata)
+        return figureAttrsFromMetadata(metadata)
+      }
     }
   }
 
@@ -508,7 +548,7 @@ function wrapEquationCitatorExports(md, options) {
         }
       }
 
-      const figureAttrs = findFigureAttrs(inline)
+      const figureAttrs = findFigureAttrs(inline, Token)
       if (figureAttrs) {
         const consumed = wrapParsedFigure(tokens, index, figureAttrs, Token)
         if (consumed) index += consumed - 1
