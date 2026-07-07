@@ -169,8 +169,8 @@ function headingSlug(rawHeading = '') {
         .trim()
         .toLowerCase()
         .replace(/[`*_~[\]()]/g, '')
-        .replace(/&amp;/g, 'and')
-        .replace(/&/g, 'and')
+        .replaceAll('&amp;', 'and')
+        .replaceAll('&', 'and')
         .replace(/[^a-z0-9\u4e00-\u9fa5]+/g, '-');
     const trimmedSlug = trimRepeatedEdges(slug, '-');
     if (!trimmedSlug)
@@ -187,7 +187,7 @@ function stripMarkdownExtension(target = '') {
     return target.replace(/\.md$/i, '');
 }
 function posixDirname(target = '') {
-    const normalized = target.replace(/\\/g, '/');
+    const normalized = target.replaceAll('\\', '/');
     const index = normalized.lastIndexOf('/');
     return index >= 0 ? normalized.slice(0, index) : '.';
 }
@@ -207,13 +207,13 @@ function relativePosixPath(fromDir = '', targetPath = '') {
     return relative || '.';
 }
 function relativeMarkdownLink(fromRelativePath = '', targetPath = '') {
-    const fromDir = posixDirname(fromRelativePath.replace(/\\/g, '/') || 'knowledge-base/index.md');
-    const relative = relativePosixPath(fromDir, targetPath.replace(/\\/g, '/'));
+    const fromDir = posixDirname(fromRelativePath.replaceAll('\\', '/') || 'knowledge-base/index.md');
+    const relative = relativePosixPath(fromDir, targetPath.replaceAll('\\', '/'));
     const link = relative.startsWith('.') ? relative : `./${relative}`;
     return encodePathSegments(link);
 }
 function currentRouteRoot(relativePath = '') {
-    const first = relativePath.replace(/\\/g, '/').split('/').find(Boolean) || '';
+    const first = relativePath.replaceAll('\\', '/').split('/').find(Boolean) || '';
     return first ? `${first}/` : '';
 }
 function hasKnownRoutePrefix(target = '') {
@@ -236,7 +236,7 @@ function resolveEmbedTargetPath(target = '', relativePath = '') {
             : normalizedTarget;
     }
     else {
-        resolved = `${posixDirname(relativePath.replace(/\\/g, '/') || 'knowledge-base/index.md')}/${normalizedTarget}`;
+        resolved = `${posixDirname(relativePath.replaceAll('\\', '/') || 'knowledge-base/index.md')}/${normalizedTarget}`;
     }
     return hash ? `${resolved}#${hash}` : resolved;
 }
@@ -476,11 +476,8 @@ function makeObsidianImageToken(Token, parsed, relativePath = '') {
     const metadata = parsed.metadata;
     const image = makeElementToken(Token, 'image', 'img', 0);
     const resolvedTarget = resolveEmbedTargetPath(parsed.target, relativePath);
-    const src = isExternalTarget(parsed.target)
-        ? parsed.target
-        : parsed.target.includes('#')
-            ? 'data:,'
-            : relativeMarkdownLink(relativePath, resolvedTarget);
+    const isEmbedded = parsed.target.includes('#') ? '' : relativeMarkdownLink(relativePath, resolvedTarget);
+    const src = isExternalTarget(parsed.target) ? parsed.target : isEmbedded;
     image.content = parsed.rawAlias || parsed.target;
     image.attrSet('src', src);
     image.attrSet('alt', parsed.rawAlias || parsed.target);
@@ -916,6 +913,7 @@ function wrapEquationCitatorExports(md, options) {
                     continue;
                 }
             }
+            // this part determines the figure that found and wrapped
             const figureAttrs = findFigureAttrs(inline, Token, figureKind);
             if (figureAttrs) {
                 const consumed = wrapParsedFigure(tokens, index, figureAttrs, Token);
