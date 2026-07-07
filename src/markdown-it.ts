@@ -369,8 +369,7 @@ function resolveEmbedTargetPath(target = '', relativePath = ''): string {
     if (hasKnownRoutePrefix(normalizedTarget)) return hash ? `${normalizedTarget}#${hash}` : normalizedTarget
 
     const routeRoot = currentRouteRoot(relativePath)
-    let resolved = normalizedTarget
-
+    let resolved: string;
     if (normalizedTarget.includes('/')) {
         resolved = routeRoot && !hasKnownRoutePrefix(normalizedTarget)
             ? `${routeRoot}${normalizedTarget}`
@@ -656,7 +655,7 @@ function makeObsidianImageToken(Token: TokenConstructor, parsed: ParsedObsidianL
     const image = makeElementToken(Token, 'image', 'img', 0)
     const resolvedTarget = resolveEmbedTargetPath(parsed.target, relativePath)
 
-    const isEmbedded = parsed.target.includes('#') ? '' : relativeMarkdownLink(relativePath, resolvedTarget)
+    const isEmbedded = parsed.target.includes('#') ? 'data:,' : relativeMarkdownLink(relativePath, resolvedTarget)
     const src = isExternalTarget(parsed.target) ? parsed.target : isEmbedded;
 
     image.content = parsed.rawAlias || parsed.target
