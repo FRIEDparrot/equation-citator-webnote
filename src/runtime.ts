@@ -3,18 +3,70 @@ const TARGET_SELECTOR = '.equation-citator-target[data-ec-kind]'
 const STYLE_ID = 'equation-citator-theme-module-style'
 const CLEANUP_KEY = '__equationCitatorThemeCleanup'
 
-const pageCache = new Map()
-let pathMappings = []
+declare global {
+  interface Document {
+    __equationCitatorPreviewEventsBlocked?: boolean
+  }
 
-let popover = null
-let activeCitation = null
+  interface Window {
+    __equationCitatorThemeCleanup?: () => void
+  }
+}
+
+type PathMapping = {
+  urlPattern: string
+  baseUrl: string
+}
+
+type CitationRef = {
+  file?: string | null
+  crossFile?: string | null
+  tag?: string | null
+}
+
+type ResolvedTarget = {
+  kind: string
+  tag: string
+  target: Element
+  samePage?: boolean
+  url: string
+}
+
+type FetchedPage = {
+  document: Document
+  url: string
+  cleanup: () => void
+}
+
+type RouterLike = {
+  onAfterRouteChanged?: (to: unknown) => void
+}
+
+type InstallOptions = {
+  router?: RouterLike
+  pathMappings?: PathMapping[]
+}
+
+type PreviewShell = {
+  prev: HTMLButtonElement
+  next: HTMLButtonElement
+  counter: HTMLElement
+  title: HTMLElement
+  jump: HTMLButtonElement
+  iframe: HTMLIFrameElement
+}
+
+const pageCache = new Map<string, Promise<FetchedPage | null>>()
+let pathMappings: PathMapping[] = []
+
+let popover: HTMLDivElement | null = null
+let activeCitation: Element | null = null
 let hideTimer = 0
 let hoverToken = 0
 
 // Preview panel state
-let previewTargets = []          // resolved targets for the active citation
+let previewTargets: ResolvedTarget[] = []          // resolved targets for the active citation
 let previewIndex = 0             // which target the iframe is currently showing
-let previewLoadingFrame = null   // hidden iframe used by fetchPageDynamically
 
 function normalizePathMappings(mappings = []) {
   return Array.isArray(mappings)
@@ -30,22 +82,36 @@ function escapeCssValue(value = '') {
   return String(value).replace(/["\\]/g, '\\$&')
 }
 
+function trimRepeatedEdges(value: string, edgeChar: string): string {
+  let start = 0
+  let end = value.length
+
+  while (start < end && value[start] === edgeChar) start += 1
+  while (end > start && value[end - 1] === edgeChar) end -= 1
+
+  return value.slice(start, end)
+}
+
+function removeUrlHash(value = ''): string {
+  const hashIndex = value.indexOf('#')
+  return hashIndex >= 0 ? value.slice(0, hashIndex) : value
+}
+
 function slugPart(value = '') {
   const slug = String(value)
     .trim()
     .toLowerCase()
-    .replace(/&amp;/g, 'and')
-    .replace(/&/g, 'and')
+    .replaceAll('&amp;', 'and')
+    .replaceAll('&', 'and')
     .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
 
-  return slug || 'target'
+  return trimRepeatedEdges(slug, '-') || 'target'
 }
 
 function hashString(value = '') {
   let hash = 2166136261
   for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index)
+    hash ^= value.charCodeAt(index)   // nosonarjs: skip
     hash = Math.imul(hash, 16777619)
   }
 
@@ -118,14 +184,14 @@ function ensureTargetId(target, kind, tag) {
   return target.id
 }
 
-function assignStableTargetIds(root = document) {
+function assignStableTargetIds(root: Document = document) {
   root.querySelectorAll(TARGET_SELECTOR).forEach((target) => {
     if (target.closest('.equation-citator-preview')) return
 
     const tag = targetTag(target)
     if (!tag) return
 
-    ensureTargetId(target, target.dataset.ecKind, tag)
+    ensureTargetId(target, (target as HTMLElement).dataset.ecKind, tag)
   })
 }
 
@@ -220,7 +286,7 @@ function currentPageDirectoryPath() {
 function resolveFileUrlCandidates(filePath) {
   const cleaned = String(filePath || '')
     .trim()
-    .replace(/\\/g, '/')
+    .replaceAll('\\', '/')
     .replace(/^\.?\//, '')
     .replace(/\.md$/i, '')
   if (!cleaned) return []
@@ -294,8 +360,8 @@ function resolveFootnoteHref(citation, fileId) {
 }
 
 
-function fetchPageDynamically(href) {
-  return new Promise((resolve) => {
+function fetchPageDynamically(href: string): Promise<FetchedPage | null> {
+  return new Promise<FetchedPage | null>((resolve) => {
     const iframe = document.createElement('iframe')
     iframe.style.position = 'absolute'
     iframe.style.width = '0'
@@ -344,8 +410,8 @@ function fetchPageDynamically(href) {
   })
 }
 
-async function fetchPage(href) {
-  const cacheKey = new URL(href, window.location.href).href.replace(/#.*$/, '')
+async function fetchPage(href: string): Promise<FetchedPage | null> {
+  const cacheKey = removeUrlHash(new URL(href, window.location.href).href)
   if (pageCache.has(cacheKey)) return pageCache.get(cacheKey)
 
   const promise = fetchPageDynamically(href)
@@ -353,127 +419,145 @@ async function fetchPage(href) {
   return promise
 }
 
+function resolvedTarget(kind: string, tag: string, target: Element, url: string, samePage = true): ResolvedTarget {
+  return { kind, tag, target, url, samePage }
+}
 
-async function resolveTargets(citation, stopAfterFirst = false) {
-  const kind = citation.dataset.ecKind
-  const refs = parseRefs(citation)
-  const resolved = []
+function logSamePageTargetMissing(kind: string, tag: string): void {
+  console.warn(
+    '[equation-citator] Same-page target not found:',
+    `kind="${kind}", tag="${tag}"`,
+    `| Current page: ${window.location.href}`
+  )
+}
+
+function resolveSamePageTarget(kind: string, tag: string): ResolvedTarget | null {
+  const target = findMatchingTarget(document, kind, tag)
+  if (!target) {
+    logSamePageTargetMissing(kind, tag)
+    return null
+  }
+
+  return resolvedTarget(kind, tag, target, removeUrlHash(window.location.href))
+}
+
+function logMissingCrossFileUrl(citation: HTMLElement, ref: CitationRef, kind: string, tag: string): void {
+  const refsDebug = JSON.stringify({ file: ref.file, crossFile: ref.crossFile, tag })
+  console.warn(
+    '[equation-citator] Could not resolve target URL for cross-file citation:',
+    `kind="${kind}", tag="${tag}"`,
+    `| ref data: ${refsDebug}`,
+    `| direct URL from file path: "${resolveFileUrl(ref.file)}"`,
+    `| Citation element:`,
+    citation
+  )
+}
+
+function targetSummary(pageDocument: Document): Array<{ kind?: string, tag?: string, id: string }> {
+  return [...pageDocument.querySelectorAll('[data-ec-kind]')].map((el) => ({
+    kind: (el as HTMLElement).dataset.ecKind,
+    tag: (el as HTMLElement).dataset.ecTag || (el as HTMLElement).dataset.tag,
+    id: el.id
+  }))
+}
+
+function logTargetNotFound(page: FetchedPage, kind: string, tag: string): void {
+  console.warn(
+    '[equation-citator] Target not found on fetched page:',
+    `kind="${kind}", tag="${tag}"`,
+    `| Fetched page: ${page.url}`,
+    `| Available targets on page:`,
+    targetSummary(page.document)
+  )
+}
+
+async function resolveTargetFromHref(href: string, kind: string, tag: string): Promise<ResolvedTarget | null> {
+  const page = await fetchPage(href)
+  if (!page) {
+    console.warn(
+      '[equation-citator] Failed to fetch target page for cross-file citation:',
+      `kind="${kind}", tag="${tag}"`,
+      `| href: "${href}"`
+    )
+    return null
+  }
+
+  const target = findMatchingTarget(page.document, kind, tag)
+  if (!target) {
+    logTargetNotFound(page, kind, tag)
+    return null
+  }
+
+  return resolvedTarget(kind, tag, target, page.url, false)
+}
+
+async function resolveFirstCrossFileTarget(hrefs: string[], kind: string, tag: string): Promise<ResolvedTarget | null> {
+  for (const href of hrefs) {
+    const target = await resolveTargetFromHref(href, kind, tag)
+    if (target) return target
+  }
+
+  return null
+}
+
+function crossFileHrefCandidates(citation: HTMLElement, ref: CitationRef): string[] {
+  const hrefs = ref.file ? resolveFileUrlCandidates(ref.file) : []
+  if (hrefs.length) return hrefs
+
+  const href = resolveFootnoteHref(citation, ref.crossFile)
+  return href ? [href] : []
+}
+
+async function resolveFootnoteFallbackTarget(
+  citation: HTMLElement,
+  ref: CitationRef,
+  hrefs: string[],
+  kind: string,
+  tag: string
+): Promise<ResolvedTarget | null> {
+  const footnoteId = ref.crossFile || ref.file
+  const href = resolveFootnoteHref(citation, footnoteId)
+  if (!href || hrefs.includes(href)) return null
+
+  return resolveTargetFromHref(href, kind, tag)
+}
+
+async function resolveCrossFileTarget(citation: HTMLElement, ref: CitationRef, kind: string, tag: string): Promise<ResolvedTarget | null> {
+  const hrefs = crossFileHrefCandidates(citation, ref)
+  if (!hrefs.length) {
+    logMissingCrossFileUrl(citation, ref, kind, tag)
+    return null
+  }
+
+  const directTarget = await resolveFirstCrossFileTarget(hrefs, kind, tag)
+  if (directTarget) return directTarget
+
+  console.warn(
+    '[equation-citator] Failed to resolve cross-file citation from href candidates:',
+    `kind="${kind}", tag="${tag}"`,
+    `| href candidates: ${hrefs.map((href) => `"${href}"`).join(', ')}`
+  )
+
+  return resolveFootnoteFallbackTarget(citation, ref, hrefs, kind, tag)
+}
+
+async function resolveTargets(citation: HTMLElement, stopAfterFirst = false): Promise<ResolvedTarget[]> {
+  const kind = citation.dataset.ecKind || ''
+  const refs = parseRefs(citation) as CitationRef[]
+  const resolved: ResolvedTarget[] = []
 
   for (const ref of refs) {
     const tag = String(ref?.tag || '').trim()
     if (!tag) continue
 
-    if (!ref.file) {
-      const target = findMatchingTarget(document, kind, tag)
-      if (target) {
-        resolved.push({
-          kind,
-          tag,
-          target,
-          url: window.location.href.replace(/#.*$/, '')
-        })
-        if (stopAfterFirst) return resolved
-      } else {
-        console.warn(
-          '[equation-citator] Same-page target not found:',
-          `kind="${kind}", tag="${tag}"`,
-          `| Current page: ${window.location.href}`
-        )
-      }
+    const target = ref.file
+      ? await resolveCrossFileTarget(citation, ref, kind, tag)
+      : resolveSamePageTarget(kind, tag)
 
-      continue
-    }
+    if (!target) continue
 
-    // Build the target page URL directly from the relative file path.
-    const hrefs = resolveFileUrlCandidates(ref.file)
-    if (!hrefs.length) {
-      const footnoteId = ref.crossFile;
-      const href = resolveFootnoteHref(citation, footnoteId)
-      if (href) hrefs.push(href)
-    }
-
-    if (!hrefs.length) {
-      const refsDebug = JSON.stringify({ file: ref.file, crossFile: ref.crossFile, tag })
-      console.warn(
-        '[equation-citator] Could not resolve target URL for cross-file citation:',
-        `kind="${kind}", tag="${tag}"`,
-        `| ref data: ${refsDebug}`,
-        `| direct URL from file path: "${resolveFileUrl(ref.file)}"`,
-        `| Citation element:`,
-        citation
-      )
-      continue
-    }
-
-    let fetchedAnyPage = false
-    let foundTarget = false
-
-    for (const href of hrefs) {
-      const page = await fetchPage(href)
-      if (!page) {
-        console.warn(
-          '[equation-citator] Failed to fetch target page for cross-file citation:',
-          `kind="${kind}", tag="${tag}"`,
-          `| href: "${href}"`
-        )
-        continue
-      }
-      fetchedAnyPage = true
-
-      const target = findMatchingTarget(page.document, kind, tag)
-      if (target) {
-        foundTarget = true
-        resolved.push({
-          kind,
-          tag,
-          target,
-          samePage: false,
-          url: page.url
-        })
-        if (stopAfterFirst) return resolved
-        break
-      }
-
-      console.warn(
-        '[equation-citator] Target not found on fetched page:',
-        `kind="${kind}", tag="${tag}"`,
-        `| Fetched page: ${page.url}`,
-        `| Available targets on page:`,
-        [...page.document.querySelectorAll('[data-ec-kind]')].map((el) => ({
-          kind: el.dataset.ecKind,
-          tag: el.dataset.ecTag || el.dataset.tag,
-          id: el.id
-        }))
-      )
-    }
-
-    if (!fetchedAnyPage) {
-      console.warn(
-        '[equation-citator] Failed to fetch target page for cross-file citation:',
-        `kind="${kind}", tag="${tag}"`,
-        `| href candidates: ${hrefs.map((href) => `"${href}"`).join(', ')}`
-      )
-      continue
-    }
-
-    if (!foundTarget) {
-      const footnoteId = ref.crossFile || ref.file
-      const href = resolveFootnoteHref(citation, footnoteId)
-      if (href && !hrefs.includes(href)) {
-        const page = await fetchPage(href)
-        const target = page ? findMatchingTarget(page.document, kind, tag) : null
-        if (target) {
-          resolved.push({
-            kind,
-            tag,
-            target,
-            samePage: false,
-            url: page.url
-          })
-          if (stopAfterFirst) return resolved
-        }
-      }
-    }
+    resolved.push(target)
+    if (stopAfterFirst) return resolved
   }
 
   return resolved
@@ -554,18 +638,18 @@ function previewTitle(resolved) {
   return tag ? `${label} ${tag}` : `${label} preview`
 }
 
-function ensurePreviewShell() {
+function ensurePreviewShell(): PreviewShell {
   const el = ensurePopover()
   let header = el.querySelector('.ec-preview-header')
   let titleRow = el.querySelector('.ec-preview-title-row')
-  let title = el.querySelector('.ec-preview-title')
-  let counter = el.querySelector('.ec-preview-counter')
+  let title = el.querySelector<HTMLElement>('.ec-preview-title')
+  let counter = el.querySelector<HTMLElement>('.ec-preview-counter')
   let actions = el.querySelector('.ec-preview-actions')
-  let prev = el.querySelector('.ec-preview-arrow.ec-preview-prev')
-  let next = el.querySelector('.ec-preview-arrow.ec-preview-next')
-  let jump = el.querySelector('.ec-preview-jump')
+  let prev = el.querySelector<HTMLButtonElement>('.ec-preview-arrow.ec-preview-prev')
+  let next = el.querySelector<HTMLButtonElement>('.ec-preview-arrow.ec-preview-next')
+  let jump = el.querySelector<HTMLButtonElement>('.ec-preview-jump')
   let body = el.querySelector('.ec-preview-body')
-  let iframe = el.querySelector('.equation-citator-preview-iframe')
+  let iframe = el.querySelector<HTMLIFrameElement>('.equation-citator-preview-iframe')
 
   if (!header) {
     header = document.createElement('div')
@@ -637,7 +721,7 @@ function ensurePreviewShell() {
       e.stopPropagation()
       openActivePreviewTarget(e)
     })
-    jump.addEventListener('auxclick', (e) => {
+    jump.addEventListener('auxclick', (e: MouseEvent) => {
       if (e.button !== 1) return
       e.preventDefault()
       e.stopPropagation()
@@ -663,7 +747,14 @@ function ensurePreviewShell() {
 
   body.appendChild(jump)
 
-  return { prev, next, counter, title, jump, iframe }
+  return {
+    prev,
+    next,
+    counter,
+    title,
+    jump,
+    iframe
+  }
 }
 
 function ensureNavControls() {
@@ -705,7 +796,7 @@ function buildPreviewUrl(resolved) {
   return targetUrl.href
 }
 
-function openActivePreviewTarget(event = {}) {
+function openActivePreviewTarget(event: Partial<MouseEvent> = {}) {
   const resolved = previewTargets[previewIndex]
   if (!resolved) return
 
@@ -951,7 +1042,10 @@ function refreshTargetsAndScrollToHash() {
   scrollToCurrentHash()
 }
 
-export function installEquationCitatorPreviews({ router, pathMappings: configuredPathMappings = [] } = {}) {
+export function installEquationCitatorPreviews({ 
+  router, 
+  pathMappings: configuredPathMappings = [] 
+}: InstallOptions = {}) {
   if (typeof window === 'undefined' || typeof document === 'undefined') return
 
   window[CLEANUP_KEY]?.()

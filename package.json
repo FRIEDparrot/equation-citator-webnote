@@ -1,6 +1,6 @@
 {
   "name": "@friedparrot/equation-citator",
-  "version": "1.3.5",
+  "version": "1.3.6",
   "description": "Web support for Equation Citator exported citations.",
   "homepage": "https://github.com/FRIEDparrot/equation-citator-webnote#readme",
   "bugs": {
@@ -14,17 +14,28 @@
   "author": "friedparrot",
   "type": "module",
   "exports": {
-    ".": "./src/index.js",
-    "./markdown-it": "./src/markdown-it.js",
-    "./runtime": "./src/runtime.js"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./markdown-it": {
+      "types": "./dist/markdown-it.d.ts",
+      "default": "./dist/markdown-it.js"
+    },
+    "./runtime": {
+      "types": "./dist/runtime.d.ts",
+      "default": "./dist/runtime.js"
+    }
   },
-  "main": "./src/index.js",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "files": [
-    "src",
+    "dist",
     "README.md"
   ],
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build"
   },
   "peerDependencies": {
     "markdown-it": ">=13"
@@ -33,5 +44,8 @@
     "markdown-it": {
       "optional": true
     }
+  },
+  "dependencies": {
+    "typescript": "^6.0.3"
   }
 }

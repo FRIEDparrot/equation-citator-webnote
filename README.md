@@ -1,8 +1,6 @@
 # equation-citator-webnote
-
-Web support for Equation Citator exported citations.
-
-For the obsidian equation-citator plugin, see https://github.com/FRIEDparrot/obsidian-equation-citator.
+## Introduction 
+Web citation grammar support for Equation Citator exported citations. Including web  citations support for equations, figures and custom callouts. 
 
 This package is designed for pages that already contain Equation Citator exported citation spans:
 
@@ -10,10 +8,18 @@ This package is designed for pages that already contain Equation Citator exporte
 <span class="equation-citator-citation" data-ec-kind="eq" data-ec-refs="[...]">...</span>
 ```
 
-It provides two entry points:
+![alt text](img/citation-example.png)
+
+This package provides two entry points:
 
 - `equation-citator/markdown-it`: build-time target injection for Markdown-it/VitePress.
 - `equation-citator/runtime`: browser hover previews, stable target IDs, and navigation.
+
+## Compatibility 
+
+You can use `obsidian-equation-citator` plugin to generate the citation HTML label with correct format. For the obsidian equation-citator plugin, see https://github.com/FRIEDparrot/obsidian-equation-citator.
+
+**Minor-version compatibility is applied**. That means, **equation-citator-webnote** (npm package) `v1.3.xx` is compatible with **obsidian-equation-citator** `v1.3.x`.
 
 ## Markdown-it
 
