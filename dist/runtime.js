@@ -3,7 +3,6 @@ const TARGET_SELECTOR = '.equation-citator-target[data-ec-kind]';
 const STYLE_ID = 'equation-citator-theme-module-style';
 const CLEANUP_KEY = '__equationCitatorThemeCleanup';
 const pageCache = new Map();
-let pathMappings = [];
 let popover = null;
 let activeCitation = null;
 let hideTimer = 0;
@@ -11,11 +10,6 @@ let hoverToken = 0;
 // Preview panel state
 let previewTargets = []; // resolved targets for the active citation
 let previewIndex = 0; // which target the iframe is currently showing
-function normalizePathMappings(mappings = []) {
-    return Array.isArray(mappings)
-        ? mappings.filter((mapping) => mapping?.urlPattern && mapping?.baseUrl)
-        : [];
-}
 function escapeCssValue(value = '') {
     if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') {
         return CSS.escape(value);
@@ -152,18 +146,16 @@ function findFootnoteDefinition(root, fileId) {
     const escaped = escapeCssValue(String(fileId || '').trim());
     return root.querySelector(`.footnotes li[id$="${escaped}"], .footnote-item[id$="${escaped}"], li[id$="${escaped}"]`);
 }
-function hrefLooksLikeKnowledgeBase(href = '') {
+function hrefLooksLikeSameOriginPage(href = '') {
     try {
         const url = new URL(href, window.location.href);
-        if (url.origin !== window.location.origin)
-            return false;
-        return pathMappings.some(({ urlPattern }) => url.pathname.includes(urlPattern));
+        return url.origin === window.location.origin && !url.hash.startsWith('#fn');
     }
     catch {
         return false;
     }
 }
-function definitionKnowledgeBaseHref(definition) {
+function definitionPageHref(definition) {
     if (!definition)
         return '';
     const links = [...definition.querySelectorAll('a[href]')];
@@ -173,7 +165,7 @@ function definitionKnowledgeBaseHref(definition) {
             return false;
         if (candidate.classList.contains('footnote-backref'))
             return false;
-        return hrefLooksLikeKnowledgeBase(href);
+        return hrefLooksLikeSameOriginPage(href);
     });
     return link?.getAttribute('href') || '';
 }
@@ -202,28 +194,17 @@ function resolveFileUrlCandidates(filePath) {
         .replace(/\.md$/i, '');
     if (!cleaned)
         return [];
-    const currentPathname = window.location.pathname;
     const candidates = [];
     const addCandidate = (routePath) => {
         if (!routePath)
             return;
         candidates.push(encodedRoutePath(routePath.replace(/\/+/g, '/')));
     };
-    // Collect candidates from every matching path mapping
-    for (const { urlPattern, baseUrl } of pathMappings) {
-        if (currentPathname.includes(urlPattern)) {
-            const base = String(baseUrl || '').replace(/\/+$/, '');
-            addCandidate(`${base}/${cleaned}`);
-        }
-    }
-    // Also try the cleaned path as-is (covers the case where the file path
-    // already starts with a known prefix)
-    if (!candidates.length || cleaned.includes('/')) {
-        addCandidate(cleaned);
-    }
+    // Try the cleaned path as-is first. This covers refs that already include
+    // a site route prefix, such as "knowledge-base/topic/page.md".
+    addCandidate(cleaned);
     // Fallback: relative to the current page's directory.
-    // Avoid duplicating a shared prefix (e.g. current dir is
-    // /kb/Equation-Citator-Tutorial and cleaned already starts with
+    // Avoid duplicating the current leaf directory when refs include it.
     const pageDir = currentPageDirectoryPath();
     if (pageDir) {
         const dirLast = pageDir.split('/').pop() || '';
@@ -239,7 +220,7 @@ function resolveFileUrl(filePath) {
 }
 function resolveFootnoteHref(citation, fileId) {
     const definition = findFootnoteDefinition(document, fileId);
-    const href = definitionKnowledgeBaseHref(definition);
+    const href = definitionPageHref(definition);
     if (href)
         return href;
     // Fallback: look for a footnote ref immediately after the citation element
@@ -248,7 +229,7 @@ function resolveFootnoteHref(citation, fileId) {
         : null;
     const targetId = nearbyRef?.getAttribute('href')?.slice(1);
     const nearbyDefinition = targetId ? document.getElementById(decodeURIComponent(targetId)) : null;
-    const nearbyHref = definitionKnowledgeBaseHref(nearbyDefinition);
+    const nearbyHref = definitionPageHref(nearbyDefinition);
     if (nearbyHref)
         return nearbyHref;
     console.warn('[equation-citator] resolveFootnoteHref failed:', `footnoteId="${fileId}"`, `| definition found by ID: ${definition ? 'yes' : 'no'}`, `| definition had KB link: ${href ? 'yes' : 'no'}`, `| nearbyRef found: ${nearbyRef ? 'yes' : 'no'}`, `| nearbyDefinition found: ${nearbyDefinition ? 'yes' : 'no'}`, `| nearbyDefinition had KB link: ${nearbyHref ? 'yes' : 'no'}`, `| Citation next sibling:`, citation.nextElementSibling);
@@ -822,11 +803,10 @@ function refreshTargetsAndScrollToHash() {
     refreshTargets();
     scrollToCurrentHash();
 }
-export function installEquationCitatorPreviews({ router, pathMappings: configuredPathMappings = [] } = {}) {
+export function installEquationCitatorPreviews({ router } = {}) {
     if (typeof window === 'undefined' || typeof document === 'undefined')
         return;
     window[CLEANUP_KEY]?.();
-    pathMappings = normalizePathMappings(configuredPathMappings);
     refreshTargetsAndScrollToHash();
     document.addEventListener('mouseover', onMouseOver);
     document.addEventListener('mouseout', onMouseOut);

@@ -39,12 +39,5 @@ This injects target metadata for math blocks with `\tag{...}`, figures, and Equa
 ```js
 import { install } from 'equation-citator/runtime'
 
-install({
-  router,
-  pathMappings: [
-    { urlPattern: '/knowledge-base/', baseUrl: '/knowledge-base' }
-  ]
-})
+install({ router })
 ```
-
-`pathMappings` are only needed for cross-file citations. Same-page citations work without them.
