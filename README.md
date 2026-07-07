@@ -60,6 +60,8 @@ md.core.ruler.before('inline', 'repo-markdown-path', (state) => {
 
 Multiple mappings are supported. The first entry whose Markdown repo path matches the file being parsed is used.
 
+For exported cross-file citations, the markdown-it plugin enriches each ref that has `file` with a resolved `local` URL inside `data-ec-refs`. The runtime uses this `local` URL for cross-file preview and navigation; it does not recompute file paths in the browser.
+
 ## Runtime
 
 ```js

@@ -1,6 +1,5 @@
 const CITATION_SELECTOR = '.equation-citator-citation[data-ec-kind][data-ec-refs]';
 const TARGET_SELECTOR = '.equation-citator-target[data-ec-kind]';
-const STYLE_ID = 'equation-citator-theme-module-style';
 const CLEANUP_KEY = '__equationCitatorThemeCleanup';
 const pageCache = new Map();
 let popover = null;
@@ -10,12 +9,6 @@ let hoverToken = 0;
 // Preview panel state
 let previewTargets = []; // resolved targets for the active citation
 let previewIndex = 0; // which target the iframe is currently showing
-function escapeCssValue(value = '') {
-    if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') {
-        return CSS.escape(value);
-    }
-    return String(value).replace(/["\\]/g, '\\$&');
-}
 function trimRepeatedEdges(value, edgeChar) {
     let start = 0;
     let end = value.length;
@@ -126,119 +119,6 @@ function findMatchingTarget(root, kind, tag) {
     return [...root.querySelectorAll(TARGET_SELECTOR)].find((target) => kindsMatch(kind, target.dataset.ecKind) &&
         tagsMatch(kind, wantedTag, targetTag(target))) || null;
 }
-function footnoteIdCandidates(fileId) {
-    const normalized = String(fileId || '').trim();
-    if (!normalized)
-        return [];
-    return [
-        `fn${normalized}`,
-        `fn-${normalized}`,
-        `fn:${normalized}`,
-        normalized
-    ];
-}
-function findFootnoteDefinition(root, fileId) {
-    for (const id of footnoteIdCandidates(fileId)) {
-        const found = root.getElementById(id);
-        if (found)
-            return found;
-    }
-    const escaped = escapeCssValue(String(fileId || '').trim());
-    return root.querySelector(`.footnotes li[id$="${escaped}"], .footnote-item[id$="${escaped}"], li[id$="${escaped}"]`);
-}
-function hrefLooksLikeSameOriginPage(href = '') {
-    try {
-        const url = new URL(href, window.location.href);
-        return url.origin === window.location.origin && !url.hash.startsWith('#fn');
-    }
-    catch {
-        return false;
-    }
-}
-function definitionPageHref(definition) {
-    if (!definition)
-        return '';
-    const links = [...definition.querySelectorAll('a[href]')];
-    const link = links.find((candidate) => {
-        const href = candidate.getAttribute('href') || '';
-        if (!href || href.startsWith('#'))
-            return false;
-        if (candidate.classList.contains('footnote-backref'))
-            return false;
-        return hrefLooksLikeSameOriginPage(href);
-    });
-    return link?.getAttribute('href') || '';
-}
-// Build a URL path from a route-path string.
-// Encodes each segment individually so special characters are safe.
-function encodedRoutePath(routePath) {
-    return `/${String(routePath || '')
-        .replace(/^\/+/, '')
-        .split('/')
-        .map((part) => encodeURIComponent(decodeURIComponent(part)))
-        .join('/')}`;
-}
-function currentPageDirectoryPath() {
-    const pathname = decodeURIComponent(window.location.pathname)
-        .replace(/\/index\.html$/i, '/')
-        .replace(/\.html$/i, '');
-    return pathname.endsWith('/')
-        ? pathname.replace(/\/$/, '')
-        : pathname.replace(/\/[^/]*$/, '');
-}
-/**
- * 1. Clean the file path,
- */
-function resolveFileUrlCandidates(filePath) {
-    const cleaned = String(filePath || '')
-        .trim()
-        .replaceAll('\\', '/')
-        .replace(/^\.?\//, '')
-        .replace(/\.md$/i, '');
-    if (!cleaned)
-        return [];
-    const candidates = [];
-    const addCandidate = (routePath) => {
-        if (!routePath)
-            return;
-        candidates.push(encodedRoutePath(routePath.replace(/\/+/g, '/')));
-    };
-    // Try the cleaned path as-is first. This covers refs that already include
-    // a site route prefix, such as "knowledge-base/topic/page.md".
-    addCandidate(cleaned);
-    // auto-resolve the file path 
-    // Fallback: relative to the current page's directory.
-    // Avoid duplicating the current leaf directory when refs include it.
-    const pageDir = currentPageDirectoryPath();
-    if (pageDir) {
-        const dirLast = pageDir.split('/').pop() || '';
-        const fallbackRel = dirLast && cleaned.startsWith(`${dirLast}/`)
-            ? cleaned.slice(dirLast.length + 1)
-            : cleaned;
-        addCandidate(`${pageDir}/${fallbackRel}`);
-    }
-    return [...new Set(candidates)];
-}
-function resolveFileUrl(filePath) {
-    return resolveFileUrlCandidates(filePath)[0] || '';
-}
-function resolveFootnoteHref(citation, fileId) {
-    const definition = findFootnoteDefinition(document, fileId);
-    const href = definitionPageHref(definition);
-    if (href)
-        return href;
-    // Fallback: look for a footnote ref immediately after the citation element
-    const nearbyRef = citation.nextElementSibling?.matches?.('.footnote-ref, sup')
-        ? citation.nextElementSibling.querySelector('a[href^="#"]')
-        : null;
-    const targetId = nearbyRef?.getAttribute('href')?.slice(1);
-    const nearbyDefinition = targetId ? document.getElementById(decodeURIComponent(targetId)) : null;
-    const nearbyHref = definitionPageHref(nearbyDefinition);
-    if (nearbyHref)
-        return nearbyHref;
-    console.warn('[equation-citator] resolveFootnoteHref failed:', `footnoteId="${fileId}"`, `| definition found by ID: ${definition ? 'yes' : 'no'}`, `| definition had KB link: ${href ? 'yes' : 'no'}`, `| nearbyRef found: ${nearbyRef ? 'yes' : 'no'}`, `| nearbyDefinition found: ${nearbyDefinition ? 'yes' : 'no'}`, `| nearbyDefinition had KB link: ${nearbyHref ? 'yes' : 'no'}`, `| Citation next sibling:`, citation.nextElementSibling);
-    return '';
-}
 function fetchPageDynamically(href) {
     return new Promise((resolve) => {
         const iframe = document.createElement('iframe');
@@ -259,8 +139,7 @@ function fetchPageDynamically(href) {
                         assignStableTargetIds(iframeDoc);
                         resolve({
                             document: iframeDoc,
-                            url: iframe.contentWindow.location.href,
-                            cleanup: () => iframe.remove()
+                            url: iframe.contentWindow.location.href
                         });
                     }
                 }, 50);
@@ -269,8 +148,7 @@ function fetchPageDynamically(href) {
                     clearInterval(checkRendered);
                     resolve({
                         document: iframeDoc,
-                        url: href,
-                        cleanup: () => iframe.remove()
+                        url: href
                     });
                 }, 2000);
             }
@@ -291,8 +169,8 @@ async function fetchPage(href) {
     pageCache.set(cacheKey, promise);
     return promise;
 }
-function resolvedTarget(kind, tag, target, url, samePage = true) {
-    return { kind, tag, target, url, samePage };
+function resolvedTarget(kind, tag, target, url) {
+    return { kind, tag, target, url };
 }
 function logSamePageTargetMissing(kind, tag) {
     console.warn('[equation-citator] Same-page target not found:', `kind="${kind}", tag="${tag}"`, `| Current page: ${window.location.href}`);
@@ -306,8 +184,8 @@ function resolveSamePageTarget(kind, tag) {
     return resolvedTarget(kind, tag, target, removeUrlHash(window.location.href));
 }
 function logMissingCrossFileUrl(citation, ref, kind, tag) {
-    const refsDebug = JSON.stringify({ file: ref.file, crossFile: ref.crossFile, tag });
-    console.warn('[equation-citator] Could not resolve target URL for cross-file citation:', `kind="${kind}", tag="${tag}"`, `| ref data: ${refsDebug}`, `| direct URL from file path: "${resolveFileUrl(ref.file)}"`, `| Citation element:`, citation);
+    const refsDebug = JSON.stringify({ file: ref.file, local: ref.local, crossFile: ref.crossFile, tag });
+    console.warn('[equation-citator] Could not resolve target URL for cross-file citation:', `kind="${kind}", tag="${tag}"`, `| ref data: ${refsDebug}`, `| Citation element:`, citation);
 }
 function targetSummary(pageDocument) {
     return [...pageDocument.querySelectorAll('[data-ec-kind]')].map((el) => ({
@@ -330,43 +208,9 @@ async function resolveTargetFromHref(href, kind, tag) {
         logTargetNotFound(page, kind, tag);
         return null;
     }
-    return resolvedTarget(kind, tag, target, page.url, false);
+    return resolvedTarget(kind, tag, target, page.url);
 }
-async function resolveFirstCrossFileTarget(hrefs, kind, tag) {
-    for (const href of hrefs) {
-        const target = await resolveTargetFromHref(href, kind, tag);
-        if (target)
-            return target;
-    }
-    return null;
-}
-function crossFileHrefCandidates(citation, ref) {
-    const hrefs = ref.file ? resolveFileUrlCandidates(ref.file) : [];
-    if (hrefs.length)
-        return hrefs;
-    const href = resolveFootnoteHref(citation, ref.crossFile);
-    return href ? [href] : [];
-}
-async function resolveFootnoteFallbackTarget(citation, ref, hrefs, kind, tag) {
-    const footnoteId = ref.crossFile || ref.file;
-    const href = resolveFootnoteHref(citation, footnoteId);
-    if (!href || hrefs.includes(href))
-        return null;
-    return resolveTargetFromHref(href, kind, tag);
-}
-async function resolveCrossFileTarget(citation, ref, kind, tag) {
-    const hrefs = crossFileHrefCandidates(citation, ref);
-    if (!hrefs.length) {
-        logMissingCrossFileUrl(citation, ref, kind, tag);
-        return null;
-    }
-    const directTarget = await resolveFirstCrossFileTarget(hrefs, kind, tag);
-    if (directTarget)
-        return directTarget;
-    console.warn('[equation-citator] Failed to resolve cross-file citation from href candidates:', `kind="${kind}", tag="${tag}"`, `| href candidates: ${hrefs.map((href) => `"${href}"`).join(', ')}`);
-    return resolveFootnoteFallbackTarget(citation, ref, hrefs, kind, tag);
-}
-async function resolveTargets(citation, stopAfterFirst = false) {
+async function resolveTargets(citation) {
     const kind = citation.dataset.ecKind || '';
     const refs = parseRefs(citation);
     const resolved = [];
@@ -374,14 +218,19 @@ async function resolveTargets(citation, stopAfterFirst = false) {
         const tag = String(ref?.tag || '').trim();
         if (!tag)
             continue;
-        const target = ref.file
-            ? await resolveCrossFileTarget(citation, ref, kind, tag)
-            : resolveSamePageTarget(kind, tag);
+        let target = null;
+        if (ref.local) {
+            target = await resolveTargetFromHref(ref.local, kind, tag);
+        }
+        else if (ref.file) {
+            logMissingCrossFileUrl(citation, ref, kind, tag);
+        }
+        else {
+            target = resolveSamePageTarget(kind, tag);
+        }
         if (!target)
             continue;
         resolved.push(target);
-        if (stopAfterFirst)
-            return resolved;
     }
     return resolved;
 }
@@ -560,11 +409,8 @@ function ensurePreviewShell() {
         iframe
     };
 }
-function ensureNavControls() {
-    return ensurePreviewShell();
-}
 function updateNavControls() {
-    const { prev, next, counter, title, jump } = ensureNavControls();
+    const { prev, next, counter, title, jump } = ensurePreviewShell();
     const count = previewTargets.length;
     const show = count > 1;
     const activeTarget = previewTargets[previewIndex];
@@ -743,7 +589,7 @@ function renderEmpty(citation) {
     popoverElement.textContent = 'No matching citation target found.';
     positionPopover(citation);
 }
-function showLoadingState(citation) {
+function showLoadingState() {
     const popoverElement = ensurePopover();
     popoverElement.className = 'equation-citator-preview is-loading';
     popoverElement.hidden = true;
@@ -752,7 +598,7 @@ async function showForCitation(citation) {
     const token = ++hoverToken;
     activeCitation = citation;
     window.clearTimeout(hideTimer);
-    showLoadingState(citation);
+    showLoadingState();
     const resolved = await resolveTargets(citation);
     if (token !== hoverToken || activeCitation !== citation)
         return;

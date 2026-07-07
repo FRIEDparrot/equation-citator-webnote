@@ -302,6 +302,62 @@ function encodedDocsLink(targetPath = '') {
     const slug = headingSlug(hash);
     return slug ? `${encodedPath}#${slug}` : `${encodedPath}#`;
 }
+function decodeHtmlAttribute(value = '') {
+    return value
+        .replaceAll('&quot;', '"')
+        .replaceAll('&#34;', '"')
+        .replaceAll('&#39;', "'")
+        .replaceAll('&apos;', "'")
+        .replaceAll('&lt;', '<')
+        .replaceAll('&gt;', '>')
+        .replaceAll('&amp;', '&');
+}
+function replaceHtmlAttribute(raw = '', name = '', value = '') {
+    const pattern = new RegExp(`(\\s${name}=)(["'])([\\s\\S]*?)(\\2)`, 'i');
+    const escaped = escapeHtmlAttribute(value);
+    return raw.replace(pattern, (_match, prefix) => `${prefix}"${escaped}"`);
+}
+function localCitationUrl(file = '', context) {
+    const resolved = resolveEmbedTargetPath(file, context.markdownPath, context.pathMapping);
+    return encodedDocsLink(resolved);
+}
+function enrichCitationRefs(rawRefs = '', context) {
+    const refs = JSON.parse(decodeHtmlAttribute(rawRefs));
+    if (!Array.isArray(refs))
+        return rawRefs;
+    const enriched = refs.map((ref) => {
+        if (!ref || typeof ref !== 'object' || !ref.file)
+            return ref;
+        return {
+            ...ref,
+            local: localCitationUrl(ref.file, context)
+        };
+    });
+    return JSON.stringify(enriched);
+}
+function enrichCitationRefsInHtml(raw = '', context) {
+    if (!raw.includes('equation-citator-citation') || !raw.includes('data-ec-refs='))
+        return raw;
+    const rawRefs = readQuotedHtmlAttribute(raw, 'data-ec-refs');
+    if (!rawRefs)
+        return raw;
+    try {
+        return replaceHtmlAttribute(raw, 'data-ec-refs', enrichCitationRefs(rawRefs, context));
+    }
+    catch {
+        return raw;
+    }
+}
+function enrichCitationRefsInTokens(tokens, context) {
+    for (const token of tokens) {
+        if (token.type === 'html_inline' || token.type === 'html_block') {
+            token.content = enrichCitationRefsInHtml(token.content, context);
+        }
+        if (token.children?.length) {
+            enrichCitationRefsInTokens(token.children, context);
+        }
+    }
+}
 function parseObsidianLink(raw = '') {
     const match = /^(!?)\[\[([^\]|]+)(?:\|([^\]]+))?\]\]$/.exec(raw);
     if (!match)
@@ -945,6 +1001,7 @@ function wrapEquationCitatorExports(md, options) {
             markdownPath: pathnameFromUrlLike(state.env.markdownPath || ''),
             pathMapping: options.pathMapping
         };
+        enrichCitationRefsInTokens(tokens, linkContext);
         if (options.enableObsidianLinks) {
             convertObsidianLinksInTokens(tokens, Token, linkContext, figureKind);
         }
