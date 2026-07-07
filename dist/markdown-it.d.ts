@@ -28,6 +28,7 @@ type MarkdownItToken = {
 };
 type TokenConstructor = new (type: string, tag: string, nesting: number) => MarkdownItToken;
 type ProcessInclude = string | RegExp | ((env: Record<string, any>, state: Pick<MarkdownItState, 'env'>) => boolean);
+export type EquationCitatorPathMapping = Record<string, string> | Array<Record<string, string>>;
 export type EquationCitatorMarkdownItOptions = {
     include?: ProcessInclude;
     filter?: ProcessInclude;
@@ -40,6 +41,7 @@ export type EquationCitatorMarkdownItOptions = {
     enableFigureCaptions?: boolean;
     enableObsidianCallouts?: boolean;
     enableObsidianLinks?: boolean;
+    pathMapping: EquationCitatorPathMapping;
 };
 type FigureMetadata = {
     tag: string;
@@ -48,6 +50,9 @@ type FigureMetadata = {
     width: string;
     label: string;
 };
-export declare function parseEquationCitatorFigureLabel(raw?: string): FigureMetadata | null;
+/**
+ * Install the markwon it plugin to the page instance.
+ */
 export declare function equationCitatorMarkdownIt(md: MarkdownItPlugin, options?: EquationCitatorMarkdownItOptions): void;
 export default equationCitatorMarkdownIt;
+export declare function parseEquationCitatorFigureLabel(raw?: string): FigureMetadata | null;

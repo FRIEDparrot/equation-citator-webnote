@@ -551,6 +551,7 @@ function ensurePopover() {
     popover.setAttribute('role', 'tooltip')
     popover.hidden = true
     popover.addEventListener('mouseenter', () => {
+        if (popover?.classList.contains('is-empty') || popover?.classList.contains('is-loading')) return
         window.clearTimeout(hideTimer)
     })
     popover.addEventListener('mouseleave', scheduleHide)
@@ -970,7 +971,13 @@ function hidePopover() {
     previewTargets = []
     previewIndex = 0
 
-    if (popover) popover.hidden = true
+    if (popover) {
+        popover.hidden = true
+        if (popover.classList.contains('is-empty') || popover.classList.contains('is-loading')) {
+            popover.textContent = ''
+            popover.className = 'equation-citator-preview'
+        }
+    }
 }
 
 function scheduleHide() {
@@ -1022,7 +1029,6 @@ function refreshTargetsAndScrollToHash() {
 
 export function installEquationCitatorPreviews({
     router,
-    
 }: InstallOptions = {}) {
     if (typeof window === 'undefined' || typeof document === 'undefined') return
 

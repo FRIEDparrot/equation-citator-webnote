@@ -12,7 +12,7 @@ This package is designed for pages that already contain Equation Citator exporte
 
 This package provides two entry points:
 
-- `equation-citator/markdown-it`: build-time target injection for Markdown-it/VitePress.
+- `equation-citator/markdown-it`: build-time target injection for Markdown-it.
 - `equation-citator/runtime`: browser hover previews, stable target IDs, and navigation.
 
 ## Compatibility 
@@ -33,6 +33,32 @@ md.use(equationCitatorMarkdownIt, {
 ```
 
 This injects target metadata for math blocks with `\tag{...}`, figures, and Equation Citator callout blockquotes.
+
+### Markdown repo path and image resolution
+
+For Obsidian-style image embeds such as `![[img.png]]`, the markdown-it plugin needs to know which Markdown repository root contains the file being parsed. Markdown-it itself does not provide a stable final webpage URL during build, so `pathMapping` is required.
+
+`pathMapping` maps each web repo link to the matching Markdown repo path:
+
+```js
+md.use(equationCitatorMarkdownIt, {
+  pathMapping: [
+    { '/knowledge-base': '/src/docs/knowledge-base' }
+  ]
+})
+```
+
+When parsing `/src/docs/knowledge-base/Equation-Citator-Tutorial/Quick Start.md`, the plugin selects the first mapping whose Markdown repo path matches the file path. Then `![[Equation-Citator-Tutorial/assets/Equation Citator Logo.png]]` resolves to `/knowledge-base/Equation-Citator-Tutorial/assets/Equation%20Citator%20Logo.png`.
+
+The plugin reads the parsed file path from `env.markdownPath`. If your build tool exposes another source path shape, set `env.markdownPath` before the plugin rule runs:
+
+```js
+md.core.ruler.before('inline', 'repo-markdown-path', (state) => {
+  state.env.markdownPath = `/src/docs/${state.env.relativePath}`
+})
+```
+
+Multiple mappings are supported. The first entry whose Markdown repo path matches the file being parsed is used.
 
 ## Runtime
 

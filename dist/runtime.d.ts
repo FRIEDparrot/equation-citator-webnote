@@ -12,6 +12,6 @@ type RouterLike = {
 type InstallOptions = {
     router?: RouterLike;
 };
-export declare function installEquationCitatorPreviews({ router }?: InstallOptions): void;
+export declare function installEquationCitatorPreviews({ router, }?: InstallOptions): void;
 export declare const install: typeof installEquationCitatorPreviews;
 export {};

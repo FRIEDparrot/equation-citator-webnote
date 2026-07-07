@@ -186,6 +186,9 @@ function currentPageDirectoryPath() {
         ? pathname.replace(/\/$/, '')
         : pathname.replace(/\/[^/]*$/, '');
 }
+/**
+ * 1. Clean the file path,
+ */
 function resolveFileUrlCandidates(filePath) {
     const cleaned = String(filePath || '')
         .trim()
@@ -203,6 +206,7 @@ function resolveFileUrlCandidates(filePath) {
     // Try the cleaned path as-is first. This covers refs that already include
     // a site route prefix, such as "knowledge-base/topic/page.md".
     addCandidate(cleaned);
+    // auto-resolve the file path 
     // Fallback: relative to the current page's directory.
     // Avoid duplicating the current leaf directory when refs include it.
     const pageDir = currentPageDirectoryPath();
@@ -389,6 +393,8 @@ function ensurePopover() {
     popover.setAttribute('role', 'tooltip');
     popover.hidden = true;
     popover.addEventListener('mouseenter', () => {
+        if (popover?.classList.contains('is-empty') || popover?.classList.contains('is-loading'))
+            return;
         window.clearTimeout(hideTimer);
     });
     popover.addEventListener('mouseleave', scheduleHide);
@@ -761,8 +767,13 @@ function hidePopover() {
     hoverToken += 1;
     previewTargets = [];
     previewIndex = 0;
-    if (popover)
+    if (popover) {
         popover.hidden = true;
+        if (popover.classList.contains('is-empty') || popover.classList.contains('is-loading')) {
+            popover.textContent = '';
+            popover.className = 'equation-citator-preview';
+        }
+    }
 }
 function scheduleHide() {
     window.clearTimeout(hideTimer);
@@ -803,7 +814,7 @@ function refreshTargetsAndScrollToHash() {
     refreshTargets();
     scrollToCurrentHash();
 }
-export function installEquationCitatorPreviews({ router } = {}) {
+export function installEquationCitatorPreviews({ router, } = {}) {
     if (typeof window === 'undefined' || typeof document === 'undefined')
         return;
     window[CLEANUP_KEY]?.();

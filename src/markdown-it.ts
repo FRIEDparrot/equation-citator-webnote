@@ -36,6 +36,10 @@ type ProcessInclude =
     | RegExp
     | ((env: Record<string, any>, state: Pick<MarkdownItState, 'env'>) => boolean)
 
+export type EquationCitatorPathMapping =
+    | Record<string, string>
+    | Array<Record<string, string>>
+
 export type EquationCitatorMarkdownItOptions = {
     include?: ProcessInclude
     filter?: ProcessInclude
@@ -48,22 +52,9 @@ export type EquationCitatorMarkdownItOptions = {
     enableFigureCaptions?: boolean
     enableObsidianCallouts?: boolean
     enableObsidianLinks?: boolean
+    pathMapping: EquationCitatorPathMapping
 }
 
-type NormalizedEquationCitatorMarkdownItOptions = Required<
-    Pick<
-        EquationCitatorMarkdownItOptions,
-        | 'equationKind'
-        | 'figureKind'
-        | 'calloutKinds'
-        | 'enableEquationTargets'
-        | 'enableFigureTargets'
-        | 'enableCalloutTargets'
-        | 'enableFigureCaptions'
-        | 'enableObsidianCallouts'
-        | 'enableObsidianLinks'
-    >
-> & Pick<EquationCitatorMarkdownItOptions, 'include' | 'filter'>
 
 type FigureMetadata = {
     tag: string
@@ -90,15 +81,18 @@ type ParsedObsidianCallout = {
     title: string
 }
 
-type ObsidianEmbedMetadata = FigureMetadata
-
 type ParsedObsidianLink = {
     raw: string
     embed: boolean
     target: string
     alias: string
     rawAlias: string
-    metadata: ObsidianEmbedMetadata
+    metadata: FigureMetadata
+}
+
+type LinkResolutionContext = {
+    markdownPath: string
+    pathMapping: EquationCitatorPathMapping
 }
 
 const HTML_SPAN_OPEN = '<span'
@@ -112,8 +106,45 @@ const DEFAULT_EQUATION_KIND = 'eq'
 const DEFAULT_FIGURE_KIND = 'fig'
 const DEFAULT_CALLOUT_KINDS = ['table']
 const OBSIDIAN_LINK_PATTERN = /(!?)\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g
-const KNOWN_DOC_ROUTE_PREFIXES = ['knowledge-base/', 'posts/', 'projects/']
 const SECTION_REFERENCE_TEXT = 'This is a section reference, click here to jump'
+
+/**
+ * Install the markwon it plugin to the page instance.
+ */
+export function equationCitatorMarkdownIt(md: MarkdownItPlugin, options: EquationCitatorMarkdownItOptions = { pathMapping: [] }): void {
+    const normalizedOptions = {
+        equationKind: DEFAULT_EQUATION_KIND,
+        figureKind: DEFAULT_FIGURE_KIND,
+        calloutKinds: DEFAULT_CALLOUT_KINDS,
+        enableEquationTargets: true,
+        enableFigureTargets: true,
+        enableCalloutTargets: true,
+        enableFigureCaptions: true,
+        enableObsidianCallouts: false,
+        enableObsidianLinks: true,
+        pathMapping: [],
+        ...options
+    } satisfies EquationCitatorMarkdownItOptions
+
+    if (normalizedOptions.enableFigureTargets || normalizedOptions.enableCalloutTargets) {
+        wrapEquationCitatorExports(md, normalizedOptions)
+    }
+
+    if (normalizedOptions.enableObsidianCallouts) {
+        wrapObsidianCallouts(md, normalizedOptions)
+    }
+
+    if (normalizedOptions.enableFigureCaptions) {
+        wrapFigureCaptions(md)
+    }
+
+    if (normalizedOptions.enableEquationTargets) {
+        wrapEquationBlocks(md, normalizedOptions)
+    }
+}
+
+export default equationCitatorMarkdownIt
+
 
 function escapeHtmlAttribute(value = ''): string {
     return String(value)
@@ -131,8 +162,9 @@ function shouldProcess(state: Pick<MarkdownItState, 'env'>, options: EquationCit
     const include = options.include ?? options.filter
     if (!include) return true
     if (typeof include === 'function') return Boolean(include(state.env, state))
-    if (include instanceof RegExp) return include.test(state.env.relativePath || '')
-    if (typeof include === 'string') return String(state.env.relativePath || '').startsWith(include)
+    const markdownPath = pathnameFromUrlLike(state.env.markdownPath || '')
+    if (include instanceof RegExp) return include.test(markdownPath)
+    if (typeof include === 'string') return markdownPath.startsWith(include)
     return true
 }
 
@@ -224,11 +256,11 @@ export function parseEquationCitatorFigureLabel(raw = ''): FigureMetadata | null
     return metadata.tag ? metadata : null
 }
 
-function parseObsidianEmbedMetadata(rawAlias = '', fallbackLabel = ''): ObsidianEmbedMetadata {
+function parseObsidianEmbedMetadata(rawAlias = '', fallbackLabel = ''): FigureMetadata {
     const parsed = parseEquationCitatorFigureLabel(rawAlias)
     if (parsed) return parsed
 
-    const metadata: ObsidianEmbedMetadata = {
+    const metadata: FigureMetadata = {
         tag: '',
         title: '',
         desc: '',
@@ -280,10 +312,6 @@ function splitTargetHash(target = ''): { path: string, hash: string } {
     }
 }
 
-function removeUrlHash(value = ''): string {
-    return splitTargetHash(value).path
-}
-
 function trimRepeatedEdges(value = '', edgeChar = '-'): string {
     let start = 0
     let end = value.length
@@ -319,75 +347,100 @@ function stripMarkdownExtension(target = ''): string {
     return target.replace(/\.md$/i, '')
 }
 
-function posixDirname(target = ''): string {
-    const normalized = target.replaceAll('\\', '/')
-    const index = normalized.lastIndexOf('/')
-    return index >= 0 ? normalized.slice(0, index) : '.'
-}
-
 function encodePathSegments(target = ''): string {
     return target.split('/').map((segment) => encodeURIComponent(segment)).join('/')
 }
 
-function relativePosixPath(fromDir = '', targetPath = ''): string {
-    const fromParts = fromDir.split('/').filter(Boolean)
-    const targetParts = targetPath.split('/').filter(Boolean)
-    let common = 0
 
-    while (common < fromParts.length && common < targetParts.length && fromParts[common] === targetParts[common]) {
-        common += 1
+// #region: path resolving functions 
+function pathnameFromUrlLike(target = ''): string {
+    const source = String(target || '').split('#')[0].split('?')[0].replaceAll('\\', '/').trim()
+    if (!source) return ''
+
+    try {
+        return new URL(source).pathname
+    } catch {
+        return source
+    }
+}
+
+function normalizeWebPath(target = ''): string {
+    const normalized = pathnameFromUrlLike(target).replace(/^\/+/, '')
+    return normalized ? `/${normalized}` : ''
+}
+
+function normalizeDirectoryPath(target = ''): string {
+    const normalized = normalizeWebPath(target)
+    if (!normalized || normalized === '/') return '/'
+    return normalized.replace(/\/+$/, '')
+}
+
+function joinWebPath(base = '/', target = ''): string {
+    const normalizedBase = normalizeDirectoryPath(base)
+    const normalizedTarget = pathnameFromUrlLike(target).replace(/^\/+/, '')
+
+    if (!normalizedTarget) return normalizedBase
+    if (normalizedBase === '/') return `/${normalizedTarget}`
+    return `${normalizedBase}/${normalizedTarget}`
+}
+
+function mappingEntries(pathMapping: EquationCitatorPathMapping): Array<{ webRepoLink: string, markdownRepoPath: string }> {
+    if (!pathMapping) return []
+
+    const entries = Array.isArray(pathMapping) ? pathMapping : [pathMapping]
+    const normalizedEntries: Array<{ webRepoLink: string, markdownRepoPath: string }> = []
+
+    for (const entry of entries) {
+        for (const [webRepoLink, markdownRepoPath] of Object.entries(entry)) {
+            normalizedEntries.push({
+                webRepoLink: normalizeDirectoryPath(webRepoLink),
+                markdownRepoPath: normalizeDirectoryPath(markdownRepoPath)
+            })
+        }
     }
 
-    const up = fromParts.slice(common).map(() => '..')
-    const down = targetParts.slice(common)
-    const relative = [...up, ...down].join('/')
-    return relative || '.'
+    return normalizedEntries.filter((entry) => entry.webRepoLink && entry.markdownRepoPath)
 }
 
-function relativeMarkdownLink(fromRelativePath = '', targetPath = ''): string {
-    const fromDir = posixDirname(fromRelativePath.replaceAll('\\', '/') || 'knowledge-base/index.md')
-    const relative = relativePosixPath(fromDir, targetPath.replaceAll('\\', '/'))
-    const link = relative.startsWith('.') ? relative : `./${relative}`
-    return encodePathSegments(link)
+function pathMatchesPrefix(target = '', prefix = ''): boolean {
+    if (prefix === '/') return true
+    return target === prefix || target.startsWith(`${prefix}/`)
 }
 
-function currentRouteRoot(relativePath = ''): string {
-    const first = relativePath.replaceAll('\\', '/').split('/').find(Boolean) || ''
-    return first ? `${first}/` : ''
-}
-
-function hasKnownRoutePrefix(target = ''): boolean {
-    return KNOWN_DOC_ROUTE_PREFIXES.some((prefix) => target.startsWith(prefix))
-}
-
-function resolveEmbedTargetPath(target = '', relativePath = ''): string {
+/**
+ * Resolves Obsidian-style targets by first selecting the mapped markdown repo
+ * that contains the markdown file currently being parsed. The link target is
+ * then appended under that mapping's web repo link.
+ */
+function resolveEmbedTargetPath(target = '', markdownPath = '', pathMapping: EquationCitatorPathMapping): string {
     if (isExternalTarget(target)) return target
 
     const { path, hash } = splitTargetHash(target)
-    const normalizedTarget = stripMarkdownExtension(path).replace(/^\/+/, '')
+    const normalizedTarget = stripMarkdownExtension(path)
     if (!normalizedTarget) return hash ? `#${hash}` : ''
-    if (hasKnownRoutePrefix(normalizedTarget)) return hash ? `${normalizedTarget}#${hash}` : normalizedTarget
 
-    const routeRoot = currentRouteRoot(relativePath)
-    let resolved: string;
-    if (normalizedTarget.includes('/')) {
-        resolved = routeRoot && !hasKnownRoutePrefix(normalizedTarget)
-            ? `${routeRoot}${normalizedTarget}`
-            : normalizedTarget
-    } else {
-        resolved = `${posixDirname(relativePath.replaceAll('\\', '/') || 'knowledge-base/index.md')}/${normalizedTarget}`
+    const normalizedMarkdownPath = normalizeWebPath(markdownPath)
+
+    for (const entry of mappingEntries(pathMapping)) {
+        if (!pathMatchesPrefix(normalizedMarkdownPath, entry.markdownRepoPath)) continue
+
+        const resolved = joinWebPath(entry.webRepoLink, normalizedTarget)
+        return hash ? `${resolved}#${hash}` : resolved
     }
 
+    const resolved = joinWebPath('/', normalizedTarget)
     return hash ? `${resolved}#${hash}` : resolved
 }
+
+
+// #endregion 
 
 function encodedDocsLink(targetPath = ''): string {
     if (isExternalTarget(targetPath)) return targetPath
 
     const { path, hash } = splitTargetHash(targetPath)
-    const normalized = path.replace(/^\/+/, '')
-    const link = hasKnownRoutePrefix(normalized) ? `/${normalized}` : `/knowledge-base/${normalized}`
-    const encodedPath = encodePathSegments(link)
+    const normalized = normalizeWebPath(path)
+    const encodedPath = encodePathSegments(normalized)
 
     if (!hash) return encodedPath
 
@@ -419,19 +472,19 @@ function normalizeKind(kind = ''): string {
     return String(kind || '').trim().toLowerCase()
 }
 
-function configuredEquationKind(options: NormalizedEquationCitatorMarkdownItOptions): string {
+function configuredEquationKind(options: EquationCitatorMarkdownItOptions): string {
     return normalizeKind(options.equationKind) || DEFAULT_EQUATION_KIND
 }
 
-function configuredFigureKind(options: NormalizedEquationCitatorMarkdownItOptions): string {
+function configuredFigureKind(options: EquationCitatorMarkdownItOptions): string {
     return normalizeKind(options.figureKind) || DEFAULT_FIGURE_KIND
 }
 
-function configuredCalloutKinds(options: NormalizedEquationCitatorMarkdownItOptions): Set<string> {
+function configuredCalloutKinds(options: EquationCitatorMarkdownItOptions): Set<string> {
     return new Set(options.calloutKinds.map(normalizeKind).filter(Boolean))
 }
 
-function configuredNonCalloutKinds(options: NormalizedEquationCitatorMarkdownItOptions): Set<string> {
+function configuredNonCalloutKinds(options: EquationCitatorMarkdownItOptions): Set<string> {
     return new Set([
         configuredEquationKind(options),
         configuredFigureKind(options)
@@ -650,12 +703,17 @@ function makeLinkTokens(Token: TokenConstructor, href: string, text: string, cla
     return [open, makeTextToken(Token, text), close]
 }
 
-function makeObsidianImageToken(Token: TokenConstructor, parsed: ParsedObsidianLink, relativePath = ''): MarkdownItToken {
+
+/**
+ * This will inject the src attributes for the image token, where we modify the src according to the 
+ *     pathMappings parameter.
+ */
+function makeObsidianImageToken(Token: TokenConstructor, parsed: ParsedObsidianLink, context: LinkResolutionContext): MarkdownItToken {
     const metadata = parsed.metadata
     const image = makeElementToken(Token, 'image', 'img', 0)
-    const resolvedTarget = resolveEmbedTargetPath(parsed.target, relativePath)
+    const resolvedTarget = resolveEmbedTargetPath(parsed.target, context.markdownPath, context.pathMapping)
 
-    const isEmbedded = parsed.target.includes('#') ? 'data:,' : relativeMarkdownLink(relativePath, resolvedTarget)
+    const isEmbedded = parsed.target.includes('#') ? 'data:,' : encodedDocsLink(resolvedTarget)
     const src = isExternalTarget(parsed.target) ? parsed.target : isEmbedded;
 
     image.content = parsed.rawAlias || parsed.target
@@ -673,7 +731,7 @@ function makeObsidianImageToken(Token: TokenConstructor, parsed: ParsedObsidianL
     return image
 }
 
-function makeObsidianLinkTokens(Token: TokenConstructor, parsed: ParsedObsidianLink, relativePath = ''): MarkdownItToken[] {
+function makeObsidianLinkTokens(Token: TokenConstructor, parsed: ParsedObsidianLink, context: LinkResolutionContext): MarkdownItToken[] {
     if (isExternalTarget(parsed.target)) {
         return makeLinkTokens(Token, parsed.target, parsed.alias)
     }
@@ -683,7 +741,7 @@ function makeObsidianLinkTokens(Token: TokenConstructor, parsed: ParsedObsidianL
     }
 
     const normalizedTarget = stripMarkdownExtension(parsed.target).replace(/^\/+/, '')
-    const targetPath = resolveEmbedTargetPath(normalizedTarget, relativePath)
+    const targetPath = resolveEmbedTargetPath(normalizedTarget, context.markdownPath, context.pathMapping)
     const href = encodedDocsLink(targetPath)
     return [
         makeHtmlInlineToken(Token, `<a href="${escapeHtmlAttribute(href)}">${escapeHtmlAttribute(parsed.alias)}</a>`)
@@ -699,19 +757,17 @@ function makeSectionReferenceTokens(Token: TokenConstructor, parsed: ParsedObsid
     )
 }
 
-function tokensFromObsidianLink(Token: TokenConstructor, parsed: ParsedObsidianLink, relativePath = ''): MarkdownItToken[] {
+function tokensFromObsidianLink(Token: TokenConstructor, parsed: ParsedObsidianLink, context: LinkResolutionContext): MarkdownItToken[] {
     if (parsed.embed) {
         if (parsed.target.startsWith('#')) {
             return makeSectionReferenceTokens(Token, parsed)
         }
-
-        return [makeObsidianImageToken(Token, parsed, relativePath)]
+        return [makeObsidianImageToken(Token, parsed, context)]
     }
-
-    return makeObsidianLinkTokens(Token, parsed, relativePath)
+    return makeObsidianLinkTokens(Token, parsed, context)
 }
 
-function replaceObsidianLinksInInlineToken(inline: MarkdownItToken, Token: TokenConstructor, relativePath = ''): void {
+function replaceObsidianLinksInInlineToken(inline: MarkdownItToken, Token: TokenConstructor, context: LinkResolutionContext): void {
     const children = inline.children || []
     const updatedChildren: MarkdownItToken[] = []
     let changed = false
@@ -732,7 +788,7 @@ function replaceObsidianLinksInInlineToken(inline: MarkdownItToken, Token: Token
             if (!parsed) continue
 
             if (index > cursor) updatedChildren.push(makeTextToken(Token, source.slice(cursor, index)))
-            updatedChildren.push(...tokensFromObsidianLink(Token, parsed, relativePath))
+            updatedChildren.push(...tokensFromObsidianLink(Token, parsed, context))
             cursor = index + match[0].length
             changed = true
         }
@@ -785,7 +841,7 @@ function wrapSectionReferenceEmbed(
 function convertObsidianLinksInTokens(
     tokens: MarkdownItToken[],
     Token: TokenConstructor,
-    relativePath = '',
+    context: LinkResolutionContext,
     figureKind = DEFAULT_FIGURE_KIND
 ): void {
     for (let index = 0; index < tokens.length; index += 1) {
@@ -799,7 +855,7 @@ function convertObsidianLinksInTokens(
 
         const token = tokens[index]
         if (token.type !== 'inline') continue
-        replaceObsidianLinksInInlineToken(token, Token, relativePath)
+        replaceObsidianLinksInInlineToken(token, Token, context)
     }
 }
 
@@ -1138,7 +1194,7 @@ function wrapObsidianCallouts(md: MarkdownItPlugin, options: EquationCitatorMark
     })
 }
 
-function wrapEquationCitatorExports(md: MarkdownItPlugin, options: NormalizedEquationCitatorMarkdownItOptions): void {
+function wrapEquationCitatorExports(md: MarkdownItPlugin, options: EquationCitatorMarkdownItOptions): void {
     md.core.ruler.after('inline', 'equation-citator-exports', (state) => {
         if (!shouldProcess(state, options)) return
 
@@ -1146,9 +1202,13 @@ function wrapEquationCitatorExports(md: MarkdownItPlugin, options: NormalizedEqu
         const figureKind = configuredFigureKind(options)
         const calloutKinds = configuredCalloutKinds(options)
         const nonCalloutKinds = configuredNonCalloutKinds(options)
+        const linkContext: LinkResolutionContext = {
+            markdownPath: pathnameFromUrlLike(state.env.markdownPath || ''),
+            pathMapping: options.pathMapping
+        }
 
         if (options.enableObsidianLinks) {
-            convertObsidianLinksInTokens(tokens, Token, state.env.relativePath, figureKind)
+            convertObsidianLinksInTokens(tokens, Token, linkContext, figureKind)
         }
 
         for (let index = 0; index < tokens.length; index += 1) {
@@ -1210,7 +1270,7 @@ function wrapFigureCaptions(md: MarkdownItPlugin): void {
     }
 }
 
-function wrapEquationBlocks(md: MarkdownItPlugin, options: NormalizedEquationCitatorMarkdownItOptions): void {
+function wrapEquationBlocks(md: MarkdownItPlugin, options: EquationCitatorMarkdownItOptions): void {
     const renderMathBlock = md.renderer.rules.math_block
     if (!renderMathBlock) return
 
@@ -1223,36 +1283,3 @@ function wrapEquationBlocks(md: MarkdownItPlugin, options: NormalizedEquationCit
         return `<div class="equation-citator-target equation-citator-equation" data-ec-kind="${equationKind}" ${equationTagAttribute(tokens[idx].content)}>${rendered}</div>`
     }
 }
-
-export function equationCitatorMarkdownIt(md: MarkdownItPlugin, options: EquationCitatorMarkdownItOptions = {}): void {
-    const normalizedOptions = {
-        equationKind: DEFAULT_EQUATION_KIND,
-        figureKind: DEFAULT_FIGURE_KIND,
-        calloutKinds: DEFAULT_CALLOUT_KINDS,
-        enableEquationTargets: true,
-        enableFigureTargets: true,
-        enableCalloutTargets: true,
-        enableFigureCaptions: true,
-        enableObsidianCallouts: false,
-        enableObsidianLinks: true,
-        ...options
-    } satisfies NormalizedEquationCitatorMarkdownItOptions
-
-    if (normalizedOptions.enableFigureTargets || normalizedOptions.enableCalloutTargets) {
-        wrapEquationCitatorExports(md, normalizedOptions)
-    }
-
-    if (normalizedOptions.enableObsidianCallouts) {
-        wrapObsidianCallouts(md, normalizedOptions)
-    }
-
-    if (normalizedOptions.enableFigureCaptions) {
-        wrapFigureCaptions(md)
-    }
-
-    if (normalizedOptions.enableEquationTargets) {
-        wrapEquationBlocks(md, normalizedOptions)
-    }
-}
-
-export default equationCitatorMarkdownIt
