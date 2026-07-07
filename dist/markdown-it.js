@@ -8,6 +8,9 @@ const DIGITS = new Set('0123456789'.split(''));
 const DEFAULT_EQUATION_KIND = 'eq';
 const DEFAULT_FIGURE_KIND = 'fig';
 const DEFAULT_CALLOUT_KINDS = ['table'];
+const OBSIDIAN_LINK_PATTERN = /(!?)\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g;
+const KNOWN_DOC_ROUTE_PREFIXES = ['knowledge-base/', 'posts/', 'projects/'];
+const SECTION_REFERENCE_TEXT = 'This is a section reference, click here to jump';
 function escapeHtmlAttribute(value = '') {
     return String(value)
         .replaceAll('&', '&amp;')
@@ -15,6 +18,10 @@ function escapeHtmlAttribute(value = '') {
         .replaceAll('<', '&lt;')
         .replaceAll('>', '&gt;');
 }
+/**
+ * This function determines whether the Equation Citator plugin should process the current MarkdownIt state based on the provided options.
+ * @param state - The current MarkdownIt state, which includes the environment and tokens.
+ */
 function shouldProcess(state, options) {
     const include = options.include ?? options.filter;
     if (!include)
@@ -97,6 +104,171 @@ export function parseEquationCitatorFigureLabel(raw = '') {
         metadata.label = part;
     }
     return metadata.tag ? metadata : null;
+}
+function parseObsidianEmbedMetadata(rawAlias = '', fallbackLabel = '') {
+    const parsed = parseEquationCitatorFigureLabel(rawAlias);
+    if (parsed)
+        return parsed;
+    const metadata = {
+        tag: '',
+        title: '',
+        desc: '',
+        width: '',
+        label: fallbackLabel
+    };
+    for (const part of String(rawAlias).split('|').map((value) => value.trim()).filter(Boolean)) {
+        const separator = part.indexOf(':');
+        const key = separator >= 0 ? part.slice(0, separator).trim().toLowerCase() : '';
+        const value = separator >= 0 ? part.slice(separator + 1).trim() : '';
+        if ((key === 'fig' || key === 'figure') && value) {
+            metadata.tag = value;
+            continue;
+        }
+        if (key === 'title') {
+            metadata.title = value;
+            continue;
+        }
+        if (key === 'desc') {
+            metadata.desc = value;
+            continue;
+        }
+        if (isDigitsOnly(part)) {
+            metadata.width = part;
+            continue;
+        }
+        metadata.label = part;
+    }
+    return metadata;
+}
+function isExternalTarget(target = '') {
+    return /^(https?:)?\/\//.test(target);
+}
+function splitTargetHash(target = '') {
+    const hashIndex = target.indexOf('#');
+    if (hashIndex < 0)
+        return { path: target, hash: '' };
+    return {
+        path: target.slice(0, hashIndex),
+        hash: target.slice(hashIndex + 1)
+    };
+}
+function removeUrlHash(value = '') {
+    return splitTargetHash(value).path;
+}
+function trimRepeatedEdges(value = '', edgeChar = '-') {
+    let start = 0;
+    let end = value.length;
+    while (start < end && value[start] === edgeChar)
+        start += 1;
+    while (end > start && value[end - 1] === edgeChar)
+        end -= 1;
+    return value.slice(start, end);
+}
+function headingSlug(rawHeading = '') {
+    const slug = rawHeading
+        .trim()
+        .toLowerCase()
+        .replace(/[`*_~[\]()]/g, '')
+        .replace(/&amp;/g, 'and')
+        .replace(/&/g, 'and')
+        .replace(/[^a-z0-9\u4e00-\u9fa5]+/g, '-');
+    const trimmedSlug = trimRepeatedEdges(slug, '-');
+    if (!trimmedSlug)
+        return '';
+    return DIGITS.has(trimmedSlug[0]) ? `_${trimmedSlug}` : trimmedSlug;
+}
+function sectionHrefFromTarget(target = '') {
+    if (!target.startsWith('#'))
+        return '';
+    const slug = headingSlug(target.slice(1));
+    return slug ? `#${slug}` : '#';
+}
+function stripMarkdownExtension(target = '') {
+    return target.replace(/\.md$/i, '');
+}
+function posixDirname(target = '') {
+    const normalized = target.replace(/\\/g, '/');
+    const index = normalized.lastIndexOf('/');
+    return index >= 0 ? normalized.slice(0, index) : '.';
+}
+function encodePathSegments(target = '') {
+    return target.split('/').map((segment) => encodeURIComponent(segment)).join('/');
+}
+function relativePosixPath(fromDir = '', targetPath = '') {
+    const fromParts = fromDir.split('/').filter(Boolean);
+    const targetParts = targetPath.split('/').filter(Boolean);
+    let common = 0;
+    while (common < fromParts.length && common < targetParts.length && fromParts[common] === targetParts[common]) {
+        common += 1;
+    }
+    const up = fromParts.slice(common).map(() => '..');
+    const down = targetParts.slice(common);
+    const relative = [...up, ...down].join('/');
+    return relative || '.';
+}
+function relativeMarkdownLink(fromRelativePath = '', targetPath = '') {
+    const fromDir = posixDirname(fromRelativePath.replace(/\\/g, '/') || 'knowledge-base/index.md');
+    const relative = relativePosixPath(fromDir, targetPath.replace(/\\/g, '/'));
+    const link = relative.startsWith('.') ? relative : `./${relative}`;
+    return encodePathSegments(link);
+}
+function currentRouteRoot(relativePath = '') {
+    const first = relativePath.replace(/\\/g, '/').split('/').find(Boolean) || '';
+    return first ? `${first}/` : '';
+}
+function hasKnownRoutePrefix(target = '') {
+    return KNOWN_DOC_ROUTE_PREFIXES.some((prefix) => target.startsWith(prefix));
+}
+function resolveEmbedTargetPath(target = '', relativePath = '') {
+    if (isExternalTarget(target))
+        return target;
+    const { path, hash } = splitTargetHash(target);
+    const normalizedTarget = stripMarkdownExtension(path).replace(/^\/+/, '');
+    if (!normalizedTarget)
+        return hash ? `#${hash}` : '';
+    if (hasKnownRoutePrefix(normalizedTarget))
+        return hash ? `${normalizedTarget}#${hash}` : normalizedTarget;
+    const routeRoot = currentRouteRoot(relativePath);
+    let resolved = normalizedTarget;
+    if (normalizedTarget.includes('/')) {
+        resolved = routeRoot && !hasKnownRoutePrefix(normalizedTarget)
+            ? `${routeRoot}${normalizedTarget}`
+            : normalizedTarget;
+    }
+    else {
+        resolved = `${posixDirname(relativePath.replace(/\\/g, '/') || 'knowledge-base/index.md')}/${normalizedTarget}`;
+    }
+    return hash ? `${resolved}#${hash}` : resolved;
+}
+function encodedDocsLink(targetPath = '') {
+    if (isExternalTarget(targetPath))
+        return targetPath;
+    const { path, hash } = splitTargetHash(targetPath);
+    const normalized = path.replace(/^\/+/, '');
+    const link = hasKnownRoutePrefix(normalized) ? `/${normalized}` : `/knowledge-base/${normalized}`;
+    const encodedPath = encodePathSegments(link);
+    if (!hash)
+        return encodedPath;
+    const slug = headingSlug(hash);
+    return slug ? `${encodedPath}#${slug}` : `${encodedPath}#`;
+}
+function parseObsidianLink(raw = '') {
+    const match = /^(!?)\[\[([^\]|]+)(?:\|([^\]]+))?\]\]$/.exec(raw);
+    if (!match)
+        return null;
+    const target = match[2].trim();
+    if (!target)
+        return null;
+    const rawAlias = match[3] || '';
+    const alias = (rawAlias || target).trim();
+    return {
+        raw,
+        embed: match[1] === '!',
+        target,
+        alias,
+        rawAlias,
+        metadata: parseObsidianEmbedMetadata(rawAlias, target)
+    };
 }
 function normalizeKind(kind = '') {
     return String(kind || '').trim().toLowerCase();
@@ -282,6 +454,145 @@ function addMarkerAttrs(token, attrs, extraClass = '') {
 function makeElementToken(Token, type, tag, nesting) {
     return new Token(type, tag, nesting);
 }
+function makeTextToken(Token, content) {
+    const token = makeElementToken(Token, 'text', '', 0);
+    token.content = content;
+    return token;
+}
+function makeHtmlInlineToken(Token, content) {
+    const token = makeElementToken(Token, 'html_inline', '', 0);
+    token.content = content;
+    return token;
+}
+function makeLinkTokens(Token, href, text, className = '') {
+    const open = makeElementToken(Token, 'link_open', 'a', 1);
+    open.attrSet('href', href);
+    if (className)
+        open.attrSet('class', className);
+    const close = makeElementToken(Token, 'link_close', 'a', -1);
+    return [open, makeTextToken(Token, text), close];
+}
+function makeObsidianImageToken(Token, parsed, relativePath = '') {
+    const metadata = parsed.metadata;
+    const image = makeElementToken(Token, 'image', 'img', 0);
+    const resolvedTarget = resolveEmbedTargetPath(parsed.target, relativePath);
+    const src = isExternalTarget(parsed.target)
+        ? parsed.target
+        : parsed.target.includes('#')
+            ? 'data:,'
+            : relativeMarkdownLink(relativePath, resolvedTarget);
+    image.content = parsed.rawAlias || parsed.target;
+    image.attrSet('src', src);
+    image.attrSet('alt', parsed.rawAlias || parsed.target);
+    image.children = [makeTextToken(Token, parsed.rawAlias || parsed.target)];
+    if (metadata.title)
+        image.attrSet('title', metadata.title);
+    if (metadata.width)
+        image.attrSet('width', metadata.width);
+    if (src === 'data:,') {
+        image.attrSet('data-missing-src', encodedDocsLink(resolvedTarget));
+    }
+    return image;
+}
+function makeObsidianLinkTokens(Token, parsed, relativePath = '') {
+    if (isExternalTarget(parsed.target)) {
+        return makeLinkTokens(Token, parsed.target, parsed.alias);
+    }
+    if (parsed.target.startsWith('#')) {
+        return makeLinkTokens(Token, sectionHrefFromTarget(parsed.target), parsed.alias);
+    }
+    const normalizedTarget = stripMarkdownExtension(parsed.target).replace(/^\/+/, '');
+    const targetPath = resolveEmbedTargetPath(normalizedTarget, relativePath);
+    const href = encodedDocsLink(targetPath);
+    return [
+        makeHtmlInlineToken(Token, `<a href="${escapeHtmlAttribute(href)}">${escapeHtmlAttribute(parsed.alias)}</a>`)
+    ];
+}
+function makeSectionReferenceTokens(Token, parsed) {
+    return makeLinkTokens(Token, sectionHrefFromTarget(parsed.target), SECTION_REFERENCE_TEXT, 'equation-citator-section-reference');
+}
+function tokensFromObsidianLink(Token, parsed, relativePath = '') {
+    if (parsed.embed) {
+        if (parsed.target.startsWith('#')) {
+            return makeSectionReferenceTokens(Token, parsed);
+        }
+        return [makeObsidianImageToken(Token, parsed, relativePath)];
+    }
+    return makeObsidianLinkTokens(Token, parsed, relativePath);
+}
+function replaceObsidianLinksInInlineToken(inline, Token, relativePath = '') {
+    const children = inline.children || [];
+    const updatedChildren = [];
+    let changed = false;
+    for (const child of children) {
+        if (child.type !== 'text') {
+            updatedChildren.push(child);
+            continue;
+        }
+        const source = child.content;
+        let cursor = 0;
+        OBSIDIAN_LINK_PATTERN.lastIndex = 0;
+        for (const match of source.matchAll(OBSIDIAN_LINK_PATTERN)) {
+            const index = match.index ?? 0;
+            const parsed = parseObsidianLink(match[0]);
+            if (!parsed)
+                continue;
+            if (index > cursor)
+                updatedChildren.push(makeTextToken(Token, source.slice(cursor, index)));
+            updatedChildren.push(...tokensFromObsidianLink(Token, parsed, relativePath));
+            cursor = index + match[0].length;
+            changed = true;
+        }
+        if (changed && cursor < source.length) {
+            updatedChildren.push(makeTextToken(Token, source.slice(cursor)));
+        }
+        else if (!changed) {
+            updatedChildren.push(child);
+        }
+    }
+    if (!changed)
+        return;
+    inline.children = updatedChildren;
+    inline.content = updatedChildren.map((token) => token.content || '').join('');
+}
+function singleTextObsidianEmbed(inline) {
+    if (!inline)
+        return null;
+    const trimmed = inline.content.trim();
+    const parsed = parseObsidianLink(trimmed);
+    if (!parsed?.embed)
+        return null;
+    return parsed;
+}
+function wrapSectionReferenceEmbed(tokens, paragraphIndex, parsed, Token, figureKind = DEFAULT_FIGURE_KIND) {
+    if (!parsed.target.startsWith('#') || !parsed.metadata.tag)
+        return false;
+    const figureOpen = makeElementToken(Token, 'equation_citator_figure_open', 'figure', 1);
+    const figureClose = makeElementToken(Token, 'equation_citator_figure_close', 'figure', -1);
+    addMarkerAttrs(figureOpen, figureAttrsFromMetadata({ ...parsed.metadata, tag: parsed.metadata.tag }, figureKind), 'equation-citator-figure-wrapper');
+    const inline = makeElementToken(Token, 'inline', '', 0);
+    inline.content = SECTION_REFERENCE_TEXT;
+    inline.children = makeSectionReferenceTokens(Token, parsed);
+    const paragraphOpen = makeElementToken(Token, 'paragraph_open', 'p', 1);
+    const paragraphClose = makeElementToken(Token, 'paragraph_close', 'p', -1);
+    tokens.splice(paragraphIndex, 3, figureOpen, paragraphOpen, inline, paragraphClose, figureClose);
+    return true;
+}
+function convertObsidianLinksInTokens(tokens, Token, relativePath = '', figureKind = DEFAULT_FIGURE_KIND) {
+    for (let index = 0; index < tokens.length; index += 1) {
+        const inline = paragraphInlineAt(tokens, index);
+        const standaloneEmbed = singleTextObsidianEmbed(inline);
+        if (standaloneEmbed?.target.startsWith('#') && wrapSectionReferenceEmbed(tokens, index, standaloneEmbed, Token, figureKind)) {
+            index += 4;
+            continue;
+        }
+        const token = tokens[index];
+        if (token.type !== 'inline')
+            continue;
+        replaceObsidianLinksInInlineToken(token, Token, relativePath);
+    }
+}
+////////////////////////// IMAGE EXTENSIONS /////////////////////  
 function htmlImageTokenFromInlineHtml(token, Token) {
     const source = token.content.trim();
     if (!startsWithCaseInsensitive(source, HTML_IMAGE_OPEN))
@@ -310,6 +621,7 @@ function isFigureImageToken(token) {
         children.some((child) => child.type === 'html_inline' &&
             startsWithCaseInsensitive(child.content.trim(), HTML_IMAGE_OPEN));
 }
+// #region  figure wrapping functions 
 function setImageTokenAlt(token, alt, Token) {
     token.content = alt;
     token.attrSet('alt', alt);
@@ -374,6 +686,9 @@ function figureWrapEnd(tokens, imageOpenIndex) {
     }
     return end;
 }
+/***
+ * Core function: wrapParsedFigure
+ */
 function wrapExportedFigure(tokens, markerOpenIndex, attrs, Token) {
     const markerInline = paragraphInlineAt(tokens, markerOpenIndex);
     if (isFigureImageToken(markerInline)) {
@@ -422,6 +737,7 @@ function wrapParsedFigure(tokens, imageOpenIndex, attrs, Token) {
     tokens.splice(imageOpenIndex, end - imageOpenIndex, ...wrapped);
     return wrapped.length;
 }
+// #endregion 
 function wrapExportedCallout(tokens, markerOpenIndex, attrs) {
     for (let index = markerOpenIndex - 1; index >= 0; index -= 1) {
         const token = tokens[index];
@@ -574,6 +890,9 @@ function wrapEquationCitatorExports(md, options) {
         const figureKind = configuredFigureKind(options);
         const calloutKinds = configuredCalloutKinds(options);
         const nonCalloutKinds = configuredNonCalloutKinds(options);
+        if (options.enableObsidianLinks) {
+            convertObsidianLinksInTokens(tokens, Token, state.env.relativePath, figureKind);
+        }
         for (let index = 0; index < tokens.length; index += 1) {
             if (wrapParsedCallout(tokens, index, Token)) {
                 continue;
@@ -652,8 +971,12 @@ export function equationCitatorMarkdownIt(md, options = {}) {
         enableCalloutTargets: true,
         enableFigureCaptions: true,
         enableObsidianCallouts: false,
+        enableObsidianLinks: true,
         ...options
     };
+    if (normalizedOptions.enableFigureTargets || normalizedOptions.enableCalloutTargets) {
+        wrapEquationCitatorExports(md, normalizedOptions);
+    }
     if (normalizedOptions.enableObsidianCallouts) {
         wrapObsidianCallouts(md, normalizedOptions);
     }
@@ -662,9 +985,6 @@ export function equationCitatorMarkdownIt(md, options = {}) {
     }
     if (normalizedOptions.enableEquationTargets) {
         wrapEquationBlocks(md, normalizedOptions);
-    }
-    if (normalizedOptions.enableFigureTargets || normalizedOptions.enableCalloutTargets) {
-        wrapEquationCitatorExports(md, normalizedOptions);
     }
 }
 export default equationCitatorMarkdownIt;

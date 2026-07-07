@@ -34,6 +34,7 @@
     "README.md"
   ],
   "scripts": {
+    "dev": "npm run build -- --watch",
     "build": "tsc -p tsconfig.json",
     "test": "npm run build"
   },

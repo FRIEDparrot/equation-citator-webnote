@@ -563,10 +563,8 @@ async function resolveTargets(citation: HTMLElement, stopAfterFirst = false): Pr
   return resolved
 }
 
-
 function ensurePopover() {
   if (popover) return popover
-
   popover = document.createElement('div')
   popover.classList.add('equation-citator-preview')
   popover.setAttribute('role', 'tooltip')
@@ -576,7 +574,6 @@ function ensurePopover() {
   })
   popover.addEventListener('mouseleave', scheduleHide)
   document.body.appendChild(popover)
-
   return popover
 }
 

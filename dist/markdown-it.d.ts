@@ -39,6 +39,7 @@ export type EquationCitatorMarkdownItOptions = {
     enableCalloutTargets?: boolean;
     enableFigureCaptions?: boolean;
     enableObsidianCallouts?: boolean;
+    enableObsidianLinks?: boolean;
 };
 type FigureMetadata = {
     tag: string;
