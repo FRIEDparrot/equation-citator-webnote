@@ -8,6 +8,5 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 coverage/
-src/
 tsconfig.json
 package-lock.json
