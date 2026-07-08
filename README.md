@@ -98,7 +98,7 @@ md.use(equationCitatorMarkdownIt, {
 
 When enabled, the plugin injects IDs into rendered heading tokens without modifying Markdown source files. Existing heading IDs are preserved. Missing IDs are generated from heading text with `buildHeadingId()`, with duplicate IDs receiving `-2`, `-3`, and so on.
 
-For repeated headings, the first generated ID keeps the base slug and later generated IDs are numbered in render order:
+For repeated headings, the first generated ID keeps the base slug and later generated IDs are numbered in render order, however, they will not be slugged :
 
 ```md
 ## Same Heading
