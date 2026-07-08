@@ -71,8 +71,6 @@ type MarkerAttrs = HtmlAttrs & {
 }
 
 type ParsedEquationCitatorCallout = {
-    title: string
-    kind: string
     attrs: MarkerAttrs
 }
 
@@ -82,7 +80,6 @@ type ParsedObsidianCallout = {
 }
 
 type ParsedObsidianLink = {
-    raw: string
     embed: boolean
     target: string
     alias: string
@@ -102,7 +99,6 @@ type LinkResolutionContext = {
     pathMapping: EquationCitatorPathMapping
 }
 
-const HTML_SPAN_OPEN = '<span'
 const HTML_IMAGE_OPEN = '<img'
 const EQUATION_TARGET_CLASS = 'equation-citator-target'
 const EQUATION_CALLOUT_CLASS = 'equation-citator-callout'
@@ -207,10 +203,6 @@ function equationTagAttribute(content = ''): string {
     return ` data-ec-tag="${escapedTag}" data-tag="${escapedTag}"`
 }
 
-function isWhitespace(char = ''): boolean {
-    return char === ' ' || char === '\t' || char === '\n' || char === '\r' || char === '\f'
-}
-
 function startsWithCaseInsensitive(source: string, prefix: string): boolean {
     return source.slice(0, prefix.length).toLowerCase() === prefix.toLowerCase()
 }
@@ -220,11 +212,7 @@ function isDigitsOnly(value: string): boolean {
 }
 
 export function parseEquationCitatorFigureLabel(raw = ''): FigureMetadata | null {
-    const parts = String(raw)
-        .split('|')
-        .map((part) => part.trim())
-        .filter(Boolean)
-    const metadata = {
+    const metadata: FigureMetadata = {
         tag: '',
         title: '',
         desc: '',
@@ -232,35 +220,29 @@ export function parseEquationCitatorFigureLabel(raw = ''): FigureMetadata | null
         label: ''
     }
 
-    for (const part of parts) {
+    applyFigureMetadataParts(metadata, raw)
+
+    return metadata.tag ? metadata : null
+}
+
+function applyFigureMetadataParts(metadata: FigureMetadata, raw = ''): void {
+    for (const part of String(raw).split('|').map((value) => value.trim()).filter(Boolean)) {
         const separator = part.indexOf(':')
         const key = separator >= 0 ? part.slice(0, separator).trim().toLowerCase() : ''
         const value = separator >= 0 ? part.slice(separator + 1).trim() : ''
 
         if ((key === 'fig' || key === 'figure') && value) {
             metadata.tag = value
-            continue
-        }
-
-        if (key === 'title') {
+        } else if (key === 'title') {
             metadata.title = value
-            continue
-        }
-
-        if (key === 'desc') {
+        } else if (key === 'desc') {
             metadata.desc = value
-            continue
-        }
-
-        if (isDigitsOnly(part)) {
+        } else if (isDigitsOnly(part)) {
             metadata.width = part
-            continue
+        } else {
+            metadata.label = part
         }
-
-        metadata.label = part
     }
-
-    return metadata.tag ? metadata : null
 }
 
 function parseObsidianEmbedMetadata(rawAlias = '', fallbackLabel = ''): FigureMetadata {
@@ -275,33 +257,7 @@ function parseObsidianEmbedMetadata(rawAlias = '', fallbackLabel = ''): FigureMe
         label: fallbackLabel
     }
 
-    for (const part of String(rawAlias).split('|').map((value) => value.trim()).filter(Boolean)) {
-        const separator = part.indexOf(':')
-        const key = separator >= 0 ? part.slice(0, separator).trim().toLowerCase() : ''
-        const value = separator >= 0 ? part.slice(separator + 1).trim() : ''
-
-        if ((key === 'fig' || key === 'figure') && value) {
-            metadata.tag = value
-            continue
-        }
-
-        if (key === 'title') {
-            metadata.title = value
-            continue
-        }
-
-        if (key === 'desc') {
-            metadata.desc = value
-            continue
-        }
-
-        if (isDigitsOnly(part)) {
-            metadata.width = part
-            continue
-        }
-
-        metadata.label = part
-    }
+    applyFigureMetadataParts(metadata, rawAlias)
 
     return metadata
 }
@@ -466,33 +422,29 @@ function decodeHtmlAttribute(value = ''): string {
         .replaceAll('&amp;', '&')
 }
 
-function replaceHtmlAttribute(raw = '', name = '', value = ''): string {
+function replaceHtmlAttribute(raw: string, name: string, value: string): string {
     const pattern = new RegExp(`(\\s${name}=)(["'])([\\s\\S]*?)(\\2)`, 'i')
     const escaped = escapeHtmlAttribute(value)
     return raw.replace(pattern, (_match, prefix) => `${prefix}"${escaped}"`)
 }
 
-function localCitationUrl(file = '', context: LinkResolutionContext): string {
-    const resolved = resolveEmbedTargetPath(file, context.markdownPath, context.pathMapping)
-    return encodedDocsLink(resolved)
-}
-
-function enrichCitationRefs(rawRefs = '', context: LinkResolutionContext): string {
+function enrichCitationRefs(rawRefs: string, context: LinkResolutionContext): string {
     const refs = JSON.parse(decodeHtmlAttribute(rawRefs))
     if (!Array.isArray(refs)) return rawRefs
 
     const enriched = refs.map((ref: CitationRef) => {
         if (!ref || typeof ref !== 'object' || !ref.file) return ref
+        const resolved = resolveEmbedTargetPath(ref.file, context.markdownPath, context.pathMapping)
         return {
             ...ref,
-            local: localCitationUrl(ref.file, context)
+            local: encodedDocsLink(resolved)
         }
     })
 
     return JSON.stringify(enriched)
 }
 
-function enrichCitationRefsInHtml(raw = '', context: LinkResolutionContext): string {
+function enrichCitationRefsInHtml(raw: string, context: LinkResolutionContext): string {
     if (!raw.includes('equation-citator-citation') || !raw.includes('data-ec-refs=')) return raw
 
     const rawRefs = readQuotedHtmlAttribute(raw, 'data-ec-refs')
@@ -528,7 +480,6 @@ function parseObsidianLink(raw = ''): ParsedObsidianLink | null {
     const alias = (rawAlias || target).trim()
 
     return {
-        raw,
         embed: match[1] === '!',
         target,
         alias,
@@ -553,13 +504,6 @@ function configuredCalloutKinds(options: EquationCitatorMarkdownItOptions): Set<
     return new Set(options.calloutKinds.map(normalizeKind).filter(Boolean))
 }
 
-function configuredNonCalloutKinds(options: EquationCitatorMarkdownItOptions): Set<string> {
-    return new Set([
-        configuredEquationKind(options),
-        configuredFigureKind(options)
-    ])
-}
-
 function figureAttrsFromMetadata(metadata: FigureMetadata, figureKind = DEFAULT_FIGURE_KIND): MarkerAttrs {
     const attrs: MarkerAttrs = {
         class: 'equation-citator-target equation-citator-figure',
@@ -575,26 +519,6 @@ function figureAttrsFromMetadata(metadata: FigureMetadata, figureKind = DEFAULT_
     }
 
     return attrs
-}
-
-function normalizeFigureAttrs(attrs: HtmlAttrs = {}, figureKind = DEFAULT_FIGURE_KIND): MarkerAttrs | null {
-    if (normalizeKind(attrs['data-ec-kind']) !== figureKind || !attrs['data-ec-tag']) return null
-
-    const normalized: MarkerAttrs = {
-        class: 'equation-citator-target equation-citator-figure',
-        'data-ec-kind': figureKind,
-        'data-ec-tag': attrs['data-ec-tag']
-    }
-
-    if (attrs['data-title']) normalized['data-title'] = attrs['data-title']
-    if (attrs['data-desc']) normalized['data-desc'] = attrs['data-desc']
-    if (attrs['data-width'] || attrs.width) {
-        const width = attrs['data-width'] || attrs.width
-        normalized['data-width'] = width
-        normalized.style = `width: ${width}px; max-width: 100%;`
-    }
-
-    return normalized
 }
 
 function parseCalloutPrefix(raw = ''): { marker: string, title: string } | null {
@@ -623,8 +547,6 @@ function parseEquationCitatorCalloutLabel(raw = ''): ParsedEquationCitatorCallou
     if (!kind || !tag) return null
 
     return {
-        title: parsed.title,
-        kind: kind.toLowerCase(),
         attrs: {
             class: `equation-citator-target equation-citator-callout ec-callout callout callout-${kind.toLowerCase()}`,
             'data-ec-kind': kind.toLowerCase(),
@@ -757,12 +679,6 @@ function makeTextToken(Token: TokenConstructor, content: string): MarkdownItToke
     return token
 }
 
-function makeHtmlInlineToken(Token: TokenConstructor, content: string): MarkdownItToken {
-    const token = makeElementToken(Token, 'html_inline', '', 0)
-    token.content = content
-    return token
-}
-
 function makeLinkTokens(Token: TokenConstructor, href: string, text: string, className = ''): MarkdownItToken[] {
     const open = makeElementToken(Token, 'link_open', 'a', 1)
     open.attrSet('href', href)
@@ -812,9 +728,7 @@ function makeObsidianLinkTokens(Token: TokenConstructor, parsed: ParsedObsidianL
     const normalizedTarget = stripMarkdownExtension(parsed.target).replace(/^\/+/, '')
     const targetPath = resolveEmbedTargetPath(normalizedTarget, context.markdownPath, context.pathMapping)
     const href = encodedDocsLink(targetPath)
-    return [
-        makeHtmlInlineToken(Token, `<a href="${escapeHtmlAttribute(href)}">${escapeHtmlAttribute(parsed.alias)}</a>`)
-    ]
+    return makeLinkTokens(Token, href, parsed.alias)
 }
 
 function makeSectionReferenceTokens(Token: TokenConstructor, parsed: ParsedObsidianLink): MarkdownItToken[] {
@@ -1041,66 +955,46 @@ function figureWrapEnd(tokens: MarkdownItToken[], imageOpenIndex: number): numbe
     return end
 }
 
-/***
- * Core function: wrapParsedFigure 
- */
+function wrapFigureRange(
+    tokens: MarkdownItToken[],
+    replaceStart: number,
+    imageStart: number,
+    attrs: MarkerAttrs,
+    Token: TokenConstructor
+): number {
+    const end = figureWrapEnd(tokens, imageStart)
+    const figureOpen = makeElementToken(Token, 'equation_citator_figure_open', 'figure', 1)
+    const figureClose = makeElementToken(Token, 'equation_citator_figure_close', 'figure', -1)
+    addMarkerAttrs(figureOpen, attrs, 'equation-citator-figure-wrapper')
+
+    const wrapped = [
+        figureOpen,
+        ...tokens.slice(imageStart, end),
+        figureClose
+    ]
+
+    tokens.splice(replaceStart, end - replaceStart, ...wrapped)
+    return wrapped.length
+}
+
 function wrapExportedFigure(tokens: MarkdownItToken[], markerOpenIndex: number, attrs: MarkerAttrs, Token: TokenConstructor): number {
     const markerInline = paragraphInlineAt(tokens, markerOpenIndex)
 
     if (isFigureImageToken(markerInline)) {
         removeEquationCitatorMarker(markerInline)
-
-        const end = figureWrapEnd(tokens, markerOpenIndex)
-        const figureOpen = makeElementToken(Token, 'equation_citator_figure_open', 'figure', 1)
-        const figureClose = makeElementToken(Token, 'equation_citator_figure_close', 'figure', -1)
-        addMarkerAttrs(figureOpen, attrs, 'equation-citator-figure-wrapper')
-
-        const wrapped = [
-            figureOpen,
-            ...tokens.slice(markerOpenIndex, end),
-            figureClose
-        ]
-
-        tokens.splice(markerOpenIndex, end - markerOpenIndex, ...wrapped)
-        return wrapped.length
+        return wrapFigureRange(tokens, markerOpenIndex, markerOpenIndex, attrs, Token)
     }
 
-    const imageInline = paragraphInlineAt(tokens, markerOpenIndex + 3)
-    if (!isFigureImageToken(imageInline)) return 0
-
-    const start = markerOpenIndex + 3
-    const end = figureWrapEnd(tokens, start)
-    const figureOpen = makeElementToken(Token, 'equation_citator_figure_open', 'figure', 1)
-    const figureClose = makeElementToken(Token, 'equation_citator_figure_close', 'figure', -1)
-    addMarkerAttrs(figureOpen, attrs, 'equation-citator-figure-wrapper')
-
-    const wrapped = [
-        figureOpen,
-        ...tokens.slice(start, end),
-        figureClose
-    ]
-
-    tokens.splice(markerOpenIndex, end - markerOpenIndex, ...wrapped)
-    return wrapped.length
+    const imageOpenIndex = markerOpenIndex + 3
+    return isFigureImageToken(paragraphInlineAt(tokens, imageOpenIndex))
+        ? wrapFigureRange(tokens, markerOpenIndex, imageOpenIndex, attrs, Token)
+        : 0
 }
 
 function wrapParsedFigure(tokens: MarkdownItToken[], imageOpenIndex: number, attrs: MarkerAttrs, Token: TokenConstructor): number {
-    const imageInline = paragraphInlineAt(tokens, imageOpenIndex)
-    if (!isFigureImageToken(imageInline)) return 0
-
-    const end = figureWrapEnd(tokens, imageOpenIndex)
-    const figureOpen = makeElementToken(Token, 'equation_citator_figure_open', 'figure', 1)
-    const figureClose = makeElementToken(Token, 'equation_citator_figure_close', 'figure', -1)
-    addMarkerAttrs(figureOpen, attrs, 'equation-citator-figure-wrapper')
-
-    const wrapped = [
-        figureOpen,
-        ...tokens.slice(imageOpenIndex, end),
-        figureClose
-    ]
-
-    tokens.splice(imageOpenIndex, end - imageOpenIndex, ...wrapped)
-    return wrapped.length
+    return isFigureImageToken(paragraphInlineAt(tokens, imageOpenIndex))
+        ? wrapFigureRange(tokens, imageOpenIndex, imageOpenIndex, attrs, Token)
+        : 0
 }
 
 // #endregion 
@@ -1268,9 +1162,9 @@ function wrapEquationCitatorExports(md: MarkdownItPlugin, options: EquationCitat
         if (!shouldProcess(state, options)) return
 
         const { tokens, Token } = state
+        const equationKind = configuredEquationKind(options)
         const figureKind = configuredFigureKind(options)
         const calloutKinds = configuredCalloutKinds(options)
-        const nonCalloutKinds = configuredNonCalloutKinds(options)
         const linkContext: LinkResolutionContext = {
             markdownPath: pathnameFromUrlLike(state.env.markdownPath || ''),
             pathMapping: options.pathMapping
@@ -1300,7 +1194,7 @@ function wrapEquationCitatorExports(md: MarkdownItPlugin, options: EquationCitat
 
                 const isCalloutMarker = (marker.class || '').split(' ').includes(EQUATION_CALLOUT_CLASS) ||
                     calloutKinds.has(markerKind) ||
-                    !nonCalloutKinds.has(markerKind)
+                    (markerKind !== equationKind && markerKind !== figureKind)
                 if (isCalloutMarker && wrapExportedCallout(tokens, index, marker)) {
                     index -= 1
                     continue

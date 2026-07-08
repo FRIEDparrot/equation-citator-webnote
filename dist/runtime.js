@@ -273,9 +273,6 @@ function positionPopover(anchor) {
     popoverElement.style.top = `${top}px`;
     popoverElement.style.left = `${left}px`;
 }
-function ensurePreviewIframe() {
-    return ensurePreviewShell().iframe;
-}
 function previewKindLabel(kind = '') {
     const normalized = String(kind || '').trim().toLowerCase();
     const labels = {
@@ -532,9 +529,9 @@ function suppressPreviewIframeEvents(iframeDocument) {
         event.preventDefault();
         event.stopPropagation();
     };
-    ['click', 'dblclick', 'auxclick', 'mousedown', 'mouseup', 'mouseover'].forEach((type) => {
+    for (const type of ['click', 'dblclick', 'auxclick', 'mousedown', 'mouseup', 'mouseover']) {
         iframeDocument.addEventListener(type, blockEvent, true);
-    });
+    }
 }
 function preparePreviewIframe(iframe, resolved) {
     const run = () => {
@@ -563,12 +560,12 @@ function preparePreviewIframe(iframe, resolved) {
     };
     if (run())
         return;
-    [120, 360, 800].forEach((delay) => {
+    for (const delay of [120, 360, 800]) {
         window.setTimeout(run, delay);
-    });
+    }
 }
 function loadPreviewTarget(resolved) {
-    const iframe = ensurePreviewIframe();
+    const { iframe } = ensurePreviewShell();
     iframe.onload = () => preparePreviewIframe(iframe, resolved);
     iframe.src = buildPreviewUrl(resolved);
     window.setTimeout(() => preparePreviewIframe(iframe, resolved), 120);

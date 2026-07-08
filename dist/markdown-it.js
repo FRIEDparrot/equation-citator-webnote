@@ -1,4 +1,3 @@
-const HTML_SPAN_OPEN = '<span';
 const HTML_IMAGE_OPEN = '<img';
 const EQUATION_TARGET_CLASS = 'equation-citator-target';
 const EQUATION_CALLOUT_CLASS = 'equation-citator-callout';
@@ -91,9 +90,6 @@ function equationTagAttribute(content = '') {
     const escapedTag = escapeHtmlAttribute(tag);
     return ` data-ec-tag="${escapedTag}" data-tag="${escapedTag}"`;
 }
-function isWhitespace(char = '') {
-    return char === ' ' || char === '\t' || char === '\n' || char === '\r' || char === '\f';
-}
 function startsWithCaseInsensitive(source, prefix) {
     return source.slice(0, prefix.length).toLowerCase() === prefix.toLowerCase();
 }
@@ -101,10 +97,6 @@ function isDigitsOnly(value) {
     return Boolean(value) && [...value].every((char) => DIGITS.has(char));
 }
 export function parseEquationCitatorFigureLabel(raw = '') {
-    const parts = String(raw)
-        .split('|')
-        .map((part) => part.trim())
-        .filter(Boolean);
     const metadata = {
         tag: '',
         title: '',
@@ -112,29 +104,30 @@ export function parseEquationCitatorFigureLabel(raw = '') {
         width: '',
         label: ''
     };
-    for (const part of parts) {
+    applyFigureMetadataParts(metadata, raw);
+    return metadata.tag ? metadata : null;
+}
+function applyFigureMetadataParts(metadata, raw = '') {
+    for (const part of String(raw).split('|').map((value) => value.trim()).filter(Boolean)) {
         const separator = part.indexOf(':');
         const key = separator >= 0 ? part.slice(0, separator).trim().toLowerCase() : '';
         const value = separator >= 0 ? part.slice(separator + 1).trim() : '';
         if ((key === 'fig' || key === 'figure') && value) {
             metadata.tag = value;
-            continue;
         }
-        if (key === 'title') {
+        else if (key === 'title') {
             metadata.title = value;
-            continue;
         }
-        if (key === 'desc') {
+        else if (key === 'desc') {
             metadata.desc = value;
-            continue;
         }
-        if (isDigitsOnly(part)) {
+        else if (isDigitsOnly(part)) {
             metadata.width = part;
-            continue;
         }
-        metadata.label = part;
+        else {
+            metadata.label = part;
+        }
     }
-    return metadata.tag ? metadata : null;
 }
 function parseObsidianEmbedMetadata(rawAlias = '', fallbackLabel = '') {
     const parsed = parseEquationCitatorFigureLabel(rawAlias);
@@ -147,28 +140,7 @@ function parseObsidianEmbedMetadata(rawAlias = '', fallbackLabel = '') {
         width: '',
         label: fallbackLabel
     };
-    for (const part of String(rawAlias).split('|').map((value) => value.trim()).filter(Boolean)) {
-        const separator = part.indexOf(':');
-        const key = separator >= 0 ? part.slice(0, separator).trim().toLowerCase() : '';
-        const value = separator >= 0 ? part.slice(separator + 1).trim() : '';
-        if ((key === 'fig' || key === 'figure') && value) {
-            metadata.tag = value;
-            continue;
-        }
-        if (key === 'title') {
-            metadata.title = value;
-            continue;
-        }
-        if (key === 'desc') {
-            metadata.desc = value;
-            continue;
-        }
-        if (isDigitsOnly(part)) {
-            metadata.width = part;
-            continue;
-        }
-        metadata.label = part;
-    }
+    applyFigureMetadataParts(metadata, rawAlias);
     return metadata;
 }
 function isExternalTarget(target = '') {
@@ -312,30 +284,27 @@ function decodeHtmlAttribute(value = '') {
         .replaceAll('&gt;', '>')
         .replaceAll('&amp;', '&');
 }
-function replaceHtmlAttribute(raw = '', name = '', value = '') {
+function replaceHtmlAttribute(raw, name, value) {
     const pattern = new RegExp(`(\\s${name}=)(["'])([\\s\\S]*?)(\\2)`, 'i');
     const escaped = escapeHtmlAttribute(value);
     return raw.replace(pattern, (_match, prefix) => `${prefix}"${escaped}"`);
 }
-function localCitationUrl(file = '', context) {
-    const resolved = resolveEmbedTargetPath(file, context.markdownPath, context.pathMapping);
-    return encodedDocsLink(resolved);
-}
-function enrichCitationRefs(rawRefs = '', context) {
+function enrichCitationRefs(rawRefs, context) {
     const refs = JSON.parse(decodeHtmlAttribute(rawRefs));
     if (!Array.isArray(refs))
         return rawRefs;
     const enriched = refs.map((ref) => {
         if (!ref || typeof ref !== 'object' || !ref.file)
             return ref;
+        const resolved = resolveEmbedTargetPath(ref.file, context.markdownPath, context.pathMapping);
         return {
             ...ref,
-            local: localCitationUrl(ref.file, context)
+            local: encodedDocsLink(resolved)
         };
     });
     return JSON.stringify(enriched);
 }
-function enrichCitationRefsInHtml(raw = '', context) {
+function enrichCitationRefsInHtml(raw, context) {
     if (!raw.includes('equation-citator-citation') || !raw.includes('data-ec-refs='))
         return raw;
     const rawRefs = readQuotedHtmlAttribute(raw, 'data-ec-refs');
@@ -368,7 +337,6 @@ function parseObsidianLink(raw = '') {
     const rawAlias = match[3] || '';
     const alias = (rawAlias || target).trim();
     return {
-        raw,
         embed: match[1] === '!',
         target,
         alias,
@@ -388,12 +356,6 @@ function configuredFigureKind(options) {
 function configuredCalloutKinds(options) {
     return new Set(options.calloutKinds.map(normalizeKind).filter(Boolean));
 }
-function configuredNonCalloutKinds(options) {
-    return new Set([
-        configuredEquationKind(options),
-        configuredFigureKind(options)
-    ]);
-}
 function figureAttrsFromMetadata(metadata, figureKind = DEFAULT_FIGURE_KIND) {
     const attrs = {
         class: 'equation-citator-target equation-citator-figure',
@@ -409,25 +371,6 @@ function figureAttrsFromMetadata(metadata, figureKind = DEFAULT_FIGURE_KIND) {
         attrs.style = `width: ${metadata.width}px; max-width: 100%;`;
     }
     return attrs;
-}
-function normalizeFigureAttrs(attrs = {}, figureKind = DEFAULT_FIGURE_KIND) {
-    if (normalizeKind(attrs['data-ec-kind']) !== figureKind || !attrs['data-ec-tag'])
-        return null;
-    const normalized = {
-        class: 'equation-citator-target equation-citator-figure',
-        'data-ec-kind': figureKind,
-        'data-ec-tag': attrs['data-ec-tag']
-    };
-    if (attrs['data-title'])
-        normalized['data-title'] = attrs['data-title'];
-    if (attrs['data-desc'])
-        normalized['data-desc'] = attrs['data-desc'];
-    if (attrs['data-width'] || attrs.width) {
-        const width = attrs['data-width'] || attrs.width;
-        normalized['data-width'] = width;
-        normalized.style = `width: ${width}px; max-width: 100%;`;
-    }
-    return normalized;
 }
 function parseCalloutPrefix(raw = '') {
     const source = String(raw);
@@ -454,8 +397,6 @@ function parseEquationCitatorCalloutLabel(raw = '') {
     if (!kind || !tag)
         return null;
     return {
-        title: parsed.title,
-        kind: kind.toLowerCase(),
         attrs: {
             class: `equation-citator-target equation-citator-callout ec-callout callout callout-${kind.toLowerCase()}`,
             'data-ec-kind': kind.toLowerCase(),
@@ -565,11 +506,6 @@ function makeTextToken(Token, content) {
     token.content = content;
     return token;
 }
-function makeHtmlInlineToken(Token, content) {
-    const token = makeElementToken(Token, 'html_inline', '', 0);
-    token.content = content;
-    return token;
-}
 function makeLinkTokens(Token, href, text, className = '') {
     const open = makeElementToken(Token, 'link_open', 'a', 1);
     open.attrSet('href', href);
@@ -611,9 +547,7 @@ function makeObsidianLinkTokens(Token, parsed, context) {
     const normalizedTarget = stripMarkdownExtension(parsed.target).replace(/^\/+/, '');
     const targetPath = resolveEmbedTargetPath(normalizedTarget, context.markdownPath, context.pathMapping);
     const href = encodedDocsLink(targetPath);
-    return [
-        makeHtmlInlineToken(Token, `<a href="${escapeHtmlAttribute(href)}">${escapeHtmlAttribute(parsed.alias)}</a>`)
-    ];
+    return makeLinkTokens(Token, href, parsed.alias);
 }
 function makeSectionReferenceTokens(Token, parsed) {
     return makeLinkTokens(Token, sectionHrefFromTarget(parsed.target), SECTION_REFERENCE_TEXT, 'equation-citator-section-reference');
@@ -793,56 +727,34 @@ function figureWrapEnd(tokens, imageOpenIndex) {
     }
     return end;
 }
-/***
- * Core function: wrapParsedFigure
- */
+function wrapFigureRange(tokens, replaceStart, imageStart, attrs, Token) {
+    const end = figureWrapEnd(tokens, imageStart);
+    const figureOpen = makeElementToken(Token, 'equation_citator_figure_open', 'figure', 1);
+    const figureClose = makeElementToken(Token, 'equation_citator_figure_close', 'figure', -1);
+    addMarkerAttrs(figureOpen, attrs, 'equation-citator-figure-wrapper');
+    const wrapped = [
+        figureOpen,
+        ...tokens.slice(imageStart, end),
+        figureClose
+    ];
+    tokens.splice(replaceStart, end - replaceStart, ...wrapped);
+    return wrapped.length;
+}
 function wrapExportedFigure(tokens, markerOpenIndex, attrs, Token) {
     const markerInline = paragraphInlineAt(tokens, markerOpenIndex);
     if (isFigureImageToken(markerInline)) {
         removeEquationCitatorMarker(markerInline);
-        const end = figureWrapEnd(tokens, markerOpenIndex);
-        const figureOpen = makeElementToken(Token, 'equation_citator_figure_open', 'figure', 1);
-        const figureClose = makeElementToken(Token, 'equation_citator_figure_close', 'figure', -1);
-        addMarkerAttrs(figureOpen, attrs, 'equation-citator-figure-wrapper');
-        const wrapped = [
-            figureOpen,
-            ...tokens.slice(markerOpenIndex, end),
-            figureClose
-        ];
-        tokens.splice(markerOpenIndex, end - markerOpenIndex, ...wrapped);
-        return wrapped.length;
+        return wrapFigureRange(tokens, markerOpenIndex, markerOpenIndex, attrs, Token);
     }
-    const imageInline = paragraphInlineAt(tokens, markerOpenIndex + 3);
-    if (!isFigureImageToken(imageInline))
-        return 0;
-    const start = markerOpenIndex + 3;
-    const end = figureWrapEnd(tokens, start);
-    const figureOpen = makeElementToken(Token, 'equation_citator_figure_open', 'figure', 1);
-    const figureClose = makeElementToken(Token, 'equation_citator_figure_close', 'figure', -1);
-    addMarkerAttrs(figureOpen, attrs, 'equation-citator-figure-wrapper');
-    const wrapped = [
-        figureOpen,
-        ...tokens.slice(start, end),
-        figureClose
-    ];
-    tokens.splice(markerOpenIndex, end - markerOpenIndex, ...wrapped);
-    return wrapped.length;
+    const imageOpenIndex = markerOpenIndex + 3;
+    return isFigureImageToken(paragraphInlineAt(tokens, imageOpenIndex))
+        ? wrapFigureRange(tokens, markerOpenIndex, imageOpenIndex, attrs, Token)
+        : 0;
 }
 function wrapParsedFigure(tokens, imageOpenIndex, attrs, Token) {
-    const imageInline = paragraphInlineAt(tokens, imageOpenIndex);
-    if (!isFigureImageToken(imageInline))
-        return 0;
-    const end = figureWrapEnd(tokens, imageOpenIndex);
-    const figureOpen = makeElementToken(Token, 'equation_citator_figure_open', 'figure', 1);
-    const figureClose = makeElementToken(Token, 'equation_citator_figure_close', 'figure', -1);
-    addMarkerAttrs(figureOpen, attrs, 'equation-citator-figure-wrapper');
-    const wrapped = [
-        figureOpen,
-        ...tokens.slice(imageOpenIndex, end),
-        figureClose
-    ];
-    tokens.splice(imageOpenIndex, end - imageOpenIndex, ...wrapped);
-    return wrapped.length;
+    return isFigureImageToken(paragraphInlineAt(tokens, imageOpenIndex))
+        ? wrapFigureRange(tokens, imageOpenIndex, imageOpenIndex, attrs, Token)
+        : 0;
 }
 // #endregion 
 function wrapExportedCallout(tokens, markerOpenIndex, attrs) {
@@ -994,9 +906,9 @@ function wrapEquationCitatorExports(md, options) {
         if (!shouldProcess(state, options))
             return;
         const { tokens, Token } = state;
+        const equationKind = configuredEquationKind(options);
         const figureKind = configuredFigureKind(options);
         const calloutKinds = configuredCalloutKinds(options);
-        const nonCalloutKinds = configuredNonCalloutKinds(options);
         const linkContext = {
             markdownPath: pathnameFromUrlLike(state.env.markdownPath || ''),
             pathMapping: options.pathMapping
@@ -1022,7 +934,7 @@ function wrapEquationCitatorExports(md, options) {
                 }
                 const isCalloutMarker = (marker.class || '').split(' ').includes(EQUATION_CALLOUT_CLASS) ||
                     calloutKinds.has(markerKind) ||
-                    !nonCalloutKinds.has(markerKind);
+                    (markerKind !== equationKind && markerKind !== figureKind);
                 if (isCalloutMarker && wrapExportedCallout(tokens, index, marker)) {
                     index -= 1;
                     continue;
