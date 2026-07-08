@@ -7,12 +7,12 @@ const DIGITS = new Set('0123456789'.split(''));
 const DEFAULT_EQUATION_KIND = 'eq';
 const DEFAULT_FIGURE_KIND = 'fig';
 const DEFAULT_CALLOUT_KINDS = ['table'];
-const OBSIDIAN_LINK_PATTERN = /(!?)\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g;
+const OBSIDIAN_LINK_PATTERN = /(!?)\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g; // nosonar
 const SECTION_REFERENCE_TEXT = 'This is a section reference, click here to jump';
 /**
  * Install the markwon it plugin to the page instance.
  */
-export function equationCitatorMarkdownIt(md, options = { pathMapping: [] }) {
+export function equationCitatorMarkdownIt(md, options) {
     const normalizedOptions = {
         equationKind: DEFAULT_EQUATION_KIND,
         figureKind: DEFAULT_FIGURE_KIND,
@@ -23,6 +23,7 @@ export function equationCitatorMarkdownIt(md, options = { pathMapping: [] }) {
         enableFigureCaptions: true,
         enableObsidianCallouts: false,
         enableObsidianLinks: true,
+        logEmbedLinkRemapping: true,
         pathMapping: [],
         ...options
     };
@@ -57,7 +58,7 @@ function shouldProcess(state, options) {
         return true;
     if (typeof include === 'function')
         return Boolean(include(state.env, state));
-    const markdownPath = pathnameFromUrlLike(state.env.markdownPath || '');
+    const markdownPath = normalizeMarkdownSourcePath(state.env.markdownPath || '');
     if (include instanceof RegExp)
         return include.test(markdownPath);
     if (typeof include === 'string')
@@ -201,6 +202,9 @@ function pathnameFromUrlLike(target = '') {
         return source;
     }
 }
+function normalizeMarkdownSourcePath(target = '') {
+    return String(target || '').split('#')[0].split('?')[0].replaceAll('\\', '/').trim().replace(/^\/+/, '');
+}
 function normalizeWebPath(target = '') {
     const normalized = pathnameFromUrlLike(target).replace(/^\/+/, '');
     return normalized ? `/${normalized}` : '';
@@ -235,7 +239,7 @@ function mappingEntries(pathMapping) {
     }
     return normalizedEntries.filter((entry) => entry.webRepoLink && entry.markdownRepoPath);
 }
-function pathMatchesPrefix(target = '', prefix = '') {
+function pathMatchesPrefix(target, prefix) {
     if (prefix === '/')
         return true;
     return target === prefix || target.startsWith(`${prefix}/`);
@@ -245,22 +249,32 @@ function pathMatchesPrefix(target = '', prefix = '') {
  * that contains the markdown file currently being parsed. The link target is
  * then appended under that mapping's web repo link.
  */
-function resolveEmbedTargetPath(target = '', markdownPath = '', pathMapping) {
+function resolveEmbedTargetPath(target, markdownPath, pathMapping, options = {}) {
+    const returnResolvedPath = (resolvedPath) => {
+        if (options.logEmbedLinkRemapping) {
+            console.debug('[equation-citator] embed target path remapping', {
+                markdownPath,
+                target,
+                resolvedPath
+            });
+        }
+        return resolvedPath;
+    };
     if (isExternalTarget(target))
-        return target;
+        return returnResolvedPath(target);
     const { path, hash } = splitTargetHash(target);
     const normalizedTarget = stripMarkdownExtension(path);
     if (!normalizedTarget)
-        return hash ? `#${hash}` : '';
+        return returnResolvedPath(hash ? `#${hash}` : '');
     const normalizedMarkdownPath = normalizeWebPath(markdownPath);
     for (const entry of mappingEntries(pathMapping)) {
         if (!pathMatchesPrefix(normalizedMarkdownPath, entry.markdownRepoPath))
             continue;
         const resolved = joinWebPath(entry.webRepoLink, normalizedTarget);
-        return hash ? `${resolved}#${hash}` : resolved;
+        return returnResolvedPath(hash ? `${resolved}#${hash}` : resolved);
     }
     const resolved = joinWebPath('/', normalizedTarget);
-    return hash ? `${resolved}#${hash}` : resolved;
+    return returnResolvedPath(hash ? `${resolved}#${hash}` : resolved);
 }
 // #endregion 
 function encodedDocsLink(targetPath = '') {
@@ -296,7 +310,7 @@ function enrichCitationRefs(rawRefs, context) {
     const enriched = refs.map((ref) => {
         if (!ref || typeof ref !== 'object' || !ref.file)
             return ref;
-        const resolved = resolveEmbedTargetPath(ref.file, context.markdownPath, context.pathMapping);
+        const resolved = resolveEmbedTargetPath(ref.file, context.markdownPath, context.pathMapping, context);
         return {
             ...ref,
             local: encodedDocsLink(resolved)
@@ -521,7 +535,7 @@ function makeLinkTokens(Token, href, text, className = '') {
 function makeObsidianImageToken(Token, parsed, context) {
     const metadata = parsed.metadata;
     const image = makeElementToken(Token, 'image', 'img', 0);
-    const resolvedTarget = resolveEmbedTargetPath(parsed.target, context.markdownPath, context.pathMapping);
+    const resolvedTarget = resolveEmbedTargetPath(parsed.target, context.markdownPath, context.pathMapping, context);
     const isEmbedded = parsed.target.includes('#') ? 'data:,' : encodedDocsLink(resolvedTarget);
     const src = isExternalTarget(parsed.target) ? parsed.target : isEmbedded;
     image.content = parsed.rawAlias || parsed.target;
@@ -545,7 +559,7 @@ function makeObsidianLinkTokens(Token, parsed, context) {
         return makeLinkTokens(Token, sectionHrefFromTarget(parsed.target), parsed.alias);
     }
     const normalizedTarget = stripMarkdownExtension(parsed.target).replace(/^\/+/, '');
-    const targetPath = resolveEmbedTargetPath(normalizedTarget, context.markdownPath, context.pathMapping);
+    const targetPath = resolveEmbedTargetPath(normalizedTarget, context.markdownPath, context.pathMapping, context);
     const href = encodedDocsLink(targetPath);
     return makeLinkTokens(Token, href, parsed.alias);
 }
@@ -554,6 +568,7 @@ function makeSectionReferenceTokens(Token, parsed) {
 }
 function tokensFromObsidianLink(Token, parsed, context) {
     if (parsed.embed) {
+        // TODO : better support for file#section reference 
         if (parsed.target.startsWith('#')) {
             return makeSectionReferenceTokens(Token, parsed);
         }
@@ -605,9 +620,10 @@ function singleTextObsidianEmbed(inline) {
         return null;
     return parsed;
 }
-function wrapSectionReferenceEmbed(tokens, paragraphIndex, parsed, Token, figureKind = DEFAULT_FIGURE_KIND) {
+function wrapSectionReferenceEmbed(tokens, paragraphIndex, parsed, Token, options) {
     if (!parsed.target.startsWith('#') || !parsed.metadata.tag)
         return false;
+    const figureKind = configuredFigureKind(options);
     const figureOpen = makeElementToken(Token, 'equation_citator_figure_open', 'figure', 1);
     const figureClose = makeElementToken(Token, 'equation_citator_figure_close', 'figure', -1);
     addMarkerAttrs(figureOpen, figureAttrsFromMetadata({ ...parsed.metadata, tag: parsed.metadata.tag }, figureKind), 'equation-citator-figure-wrapper');
@@ -619,11 +635,11 @@ function wrapSectionReferenceEmbed(tokens, paragraphIndex, parsed, Token, figure
     tokens.splice(paragraphIndex, 3, figureOpen, paragraphOpen, inline, paragraphClose, figureClose);
     return true;
 }
-function convertObsidianLinksInTokens(tokens, Token, context, figureKind = DEFAULT_FIGURE_KIND) {
+function convertObsidianLinksInTokens(tokens, Token, context, options) {
     for (let index = 0; index < tokens.length; index += 1) {
         const inline = paragraphInlineAt(tokens, index);
         const standaloneEmbed = singleTextObsidianEmbed(inline);
-        if (standaloneEmbed?.target.startsWith('#') && wrapSectionReferenceEmbed(tokens, index, standaloneEmbed, Token, figureKind)) {
+        if (standaloneEmbed?.target.startsWith('#') && wrapSectionReferenceEmbed(tokens, index, standaloneEmbed, Token, options)) {
             index += 4;
             continue;
         }
@@ -903,19 +919,21 @@ function wrapObsidianCallouts(md, options) {
 }
 function wrapEquationCitatorExports(md, options) {
     md.core.ruler.after('inline', 'equation-citator-exports', (state) => {
-        if (!shouldProcess(state, options))
+        if (!shouldProcess(state, options)) {
             return;
+        }
         const { tokens, Token } = state;
         const equationKind = configuredEquationKind(options);
         const figureKind = configuredFigureKind(options);
         const calloutKinds = configuredCalloutKinds(options);
         const linkContext = {
-            markdownPath: pathnameFromUrlLike(state.env.markdownPath || ''),
-            pathMapping: options.pathMapping
+            markdownPath: normalizeMarkdownSourcePath(state.env.markdownPath || ''),
+            pathMapping: options.pathMapping,
+            logEmbedLinkRemapping: options.logEmbedLinkRemapping
         };
         enrichCitationRefsInTokens(tokens, linkContext);
         if (options.enableObsidianLinks) {
-            convertObsidianLinksInTokens(tokens, Token, linkContext, figureKind);
+            convertObsidianLinksInTokens(tokens, Token, linkContext, options);
         }
         for (let index = 0; index < tokens.length; index += 1) {
             if (wrapParsedCallout(tokens, index, Token)) {

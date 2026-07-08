@@ -41,6 +41,7 @@ export type EquationCitatorMarkdownItOptions = {
     enableFigureCaptions?: boolean;
     enableObsidianCallouts?: boolean;
     enableObsidianLinks?: boolean;
+    logEmbedLinkRemapping?: boolean;
     pathMapping: EquationCitatorPathMapping;
 };
 type FigureMetadata = {
@@ -53,6 +54,6 @@ type FigureMetadata = {
 /**
  * Install the markwon it plugin to the page instance.
  */
-export declare function equationCitatorMarkdownIt(md: MarkdownItPlugin, options?: EquationCitatorMarkdownItOptions): void;
+export declare function equationCitatorMarkdownIt(md: MarkdownItPlugin, options: EquationCitatorMarkdownItOptions | undefined): void;
 export default equationCitatorMarkdownIt;
 export declare function parseEquationCitatorFigureLabel(raw?: string): FigureMetadata | null;

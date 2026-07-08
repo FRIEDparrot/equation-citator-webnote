@@ -52,6 +52,7 @@ export type EquationCitatorMarkdownItOptions = {
     enableFigureCaptions?: boolean
     enableObsidianCallouts?: boolean
     enableObsidianLinks?: boolean
+    logEmbedLinkRemapping?: boolean
     pathMapping: EquationCitatorPathMapping
 }
 
@@ -97,6 +98,7 @@ type CitationRef = {
 type LinkResolutionContext = {
     markdownPath: string
     pathMapping: EquationCitatorPathMapping
+    logEmbedLinkRemapping?: boolean
 }
 
 const HTML_IMAGE_OPEN = '<img'
@@ -108,13 +110,13 @@ const DIGITS = new Set('0123456789'.split(''))
 const DEFAULT_EQUATION_KIND = 'eq'
 const DEFAULT_FIGURE_KIND = 'fig'
 const DEFAULT_CALLOUT_KINDS = ['table']
-const OBSIDIAN_LINK_PATTERN = /(!?)\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g
+const OBSIDIAN_LINK_PATTERN = /(!?)\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g    // nosonar
 const SECTION_REFERENCE_TEXT = 'This is a section reference, click here to jump'
 
 /**
  * Install the markwon it plugin to the page instance.
  */
-export function equationCitatorMarkdownIt(md: MarkdownItPlugin, options: EquationCitatorMarkdownItOptions = { pathMapping: [] }): void {
+export function equationCitatorMarkdownIt(md: MarkdownItPlugin, options: EquationCitatorMarkdownItOptions|undefined): void {
     const normalizedOptions = {
         equationKind: DEFAULT_EQUATION_KIND,
         figureKind: DEFAULT_FIGURE_KIND,
@@ -125,6 +127,7 @@ export function equationCitatorMarkdownIt(md: MarkdownItPlugin, options: Equatio
         enableFigureCaptions: true,
         enableObsidianCallouts: false,
         enableObsidianLinks: true,
+        logEmbedLinkRemapping : true,
         pathMapping: [],
         ...options
     } satisfies EquationCitatorMarkdownItOptions
@@ -165,7 +168,7 @@ function shouldProcess(state: Pick<MarkdownItState, 'env'>, options: EquationCit
     const include = options.include ?? options.filter
     if (!include) return true
     if (typeof include === 'function') return Boolean(include(state.env, state))
-    const markdownPath = pathnameFromUrlLike(state.env.markdownPath || '')
+    const markdownPath = normalizeMarkdownSourcePath(state.env.markdownPath || '')
     if (include instanceof RegExp) return include.test(markdownPath)
     if (typeof include === 'string') return markdownPath.startsWith(include)
     return true
@@ -327,6 +330,10 @@ function pathnameFromUrlLike(target = ''): string {
     }
 }
 
+function normalizeMarkdownSourcePath(target = ''): string {
+    return String(target || '').split('#')[0].split('?')[0].replaceAll('\\', '/').trim().replace(/^\/+/, '')
+}
+
 function normalizeWebPath(target = ''): string {
     const normalized = pathnameFromUrlLike(target).replace(/^\/+/, '')
     return normalized ? `/${normalized}` : ''
@@ -365,7 +372,7 @@ function mappingEntries(pathMapping: EquationCitatorPathMapping): Array<{ webRep
     return normalizedEntries.filter((entry) => entry.webRepoLink && entry.markdownRepoPath)
 }
 
-function pathMatchesPrefix(target = '', prefix = ''): boolean {
+function pathMatchesPrefix(target:string, prefix:string): boolean {
     if (prefix === '/') return true
     return target === prefix || target.startsWith(`${prefix}/`)
 }
@@ -375,12 +382,28 @@ function pathMatchesPrefix(target = '', prefix = ''): boolean {
  * that contains the markdown file currently being parsed. The link target is
  * then appended under that mapping's web repo link.
  */
-function resolveEmbedTargetPath(target = '', markdownPath = '', pathMapping: EquationCitatorPathMapping): string {
-    if (isExternalTarget(target)) return target
+function resolveEmbedTargetPath(
+    target:string,
+    markdownPath:string,
+    pathMapping: EquationCitatorPathMapping,
+    options: Pick<EquationCitatorMarkdownItOptions, 'logEmbedLinkRemapping'> = {}
+): string {
+    const returnResolvedPath = (resolvedPath: string): string => {
+        if (options.logEmbedLinkRemapping) {
+            console.debug('[equation-citator] embed target path remapping', {
+                markdownPath,
+                target,
+                resolvedPath
+            })
+        }
+        return resolvedPath
+    }
+
+    if (isExternalTarget(target)) return returnResolvedPath(target)
 
     const { path, hash } = splitTargetHash(target)
     const normalizedTarget = stripMarkdownExtension(path)
-    if (!normalizedTarget) return hash ? `#${hash}` : ''
+    if (!normalizedTarget) return returnResolvedPath(hash ? `#${hash}` : '')
 
     const normalizedMarkdownPath = normalizeWebPath(markdownPath)
 
@@ -388,11 +411,11 @@ function resolveEmbedTargetPath(target = '', markdownPath = '', pathMapping: Equ
         if (!pathMatchesPrefix(normalizedMarkdownPath, entry.markdownRepoPath)) continue
 
         const resolved = joinWebPath(entry.webRepoLink, normalizedTarget)
-        return hash ? `${resolved}#${hash}` : resolved
+        return returnResolvedPath(hash ? `${resolved}#${hash}` : resolved)
     }
 
     const resolved = joinWebPath('/', normalizedTarget)
-    return hash ? `${resolved}#${hash}` : resolved
+    return returnResolvedPath(hash ? `${resolved}#${hash}` : resolved)
 }
 
 
@@ -434,7 +457,7 @@ function enrichCitationRefs(rawRefs: string, context: LinkResolutionContext): st
 
     const enriched = refs.map((ref: CitationRef) => {
         if (!ref || typeof ref !== 'object' || !ref.file) return ref
-        const resolved = resolveEmbedTargetPath(ref.file, context.markdownPath, context.pathMapping)
+        const resolved = resolveEmbedTargetPath(ref.file, context.markdownPath, context.pathMapping, context)
         return {
             ...ref,
             local: encodedDocsLink(resolved)
@@ -696,7 +719,7 @@ function makeLinkTokens(Token: TokenConstructor, href: string, text: string, cla
 function makeObsidianImageToken(Token: TokenConstructor, parsed: ParsedObsidianLink, context: LinkResolutionContext): MarkdownItToken {
     const metadata = parsed.metadata
     const image = makeElementToken(Token, 'image', 'img', 0)
-    const resolvedTarget = resolveEmbedTargetPath(parsed.target, context.markdownPath, context.pathMapping)
+    const resolvedTarget = resolveEmbedTargetPath(parsed.target, context.markdownPath, context.pathMapping, context)
 
     const isEmbedded = parsed.target.includes('#') ? 'data:,' : encodedDocsLink(resolvedTarget)
     const src = isExternalTarget(parsed.target) ? parsed.target : isEmbedded;
@@ -726,7 +749,7 @@ function makeObsidianLinkTokens(Token: TokenConstructor, parsed: ParsedObsidianL
     }
 
     const normalizedTarget = stripMarkdownExtension(parsed.target).replace(/^\/+/, '')
-    const targetPath = resolveEmbedTargetPath(normalizedTarget, context.markdownPath, context.pathMapping)
+    const targetPath = resolveEmbedTargetPath(normalizedTarget, context.markdownPath, context.pathMapping, context)
     const href = encodedDocsLink(targetPath)
     return makeLinkTokens(Token, href, parsed.alias)
 }
@@ -742,6 +765,7 @@ function makeSectionReferenceTokens(Token: TokenConstructor, parsed: ParsedObsid
 
 function tokensFromObsidianLink(Token: TokenConstructor, parsed: ParsedObsidianLink, context: LinkResolutionContext): MarkdownItToken[] {
     if (parsed.embed) {
+        // TODO : better support for file#section reference 
         if (parsed.target.startsWith('#')) {
             return makeSectionReferenceTokens(Token, parsed)
         }
@@ -802,10 +826,10 @@ function wrapSectionReferenceEmbed(
     paragraphIndex: number,
     parsed: ParsedObsidianLink,
     Token: TokenConstructor,
-    figureKind = DEFAULT_FIGURE_KIND
+    options: EquationCitatorMarkdownItOptions
 ): boolean {
     if (!parsed.target.startsWith('#') || !parsed.metadata.tag) return false
-
+    const figureKind = configuredFigureKind(options)
     const figureOpen = makeElementToken(Token, 'equation_citator_figure_open', 'figure', 1)
     const figureClose = makeElementToken(Token, 'equation_citator_figure_close', 'figure', -1)
     addMarkerAttrs(figureOpen, figureAttrsFromMetadata({ ...parsed.metadata, tag: parsed.metadata.tag }, figureKind), 'equation-citator-figure-wrapper')
@@ -825,13 +849,15 @@ function convertObsidianLinksInTokens(
     tokens: MarkdownItToken[],
     Token: TokenConstructor,
     context: LinkResolutionContext,
-    figureKind = DEFAULT_FIGURE_KIND
+    options: EquationCitatorMarkdownItOptions,
 ): void {
     for (let index = 0; index < tokens.length; index += 1) {
         const inline = paragraphInlineAt(tokens, index)
         const standaloneEmbed = singleTextObsidianEmbed(inline)
 
-        if (standaloneEmbed?.target.startsWith('#') && wrapSectionReferenceEmbed(tokens, index, standaloneEmbed, Token, figureKind)) {
+        if (standaloneEmbed?.target.startsWith('#') && wrapSectionReferenceEmbed(
+            tokens, index, standaloneEmbed, Token, options)
+        ) {
             index += 4
             continue
         }
@@ -1159,21 +1185,23 @@ function wrapObsidianCallouts(md: MarkdownItPlugin, options: EquationCitatorMark
 
 function wrapEquationCitatorExports(md: MarkdownItPlugin, options: EquationCitatorMarkdownItOptions): void {
     md.core.ruler.after('inline', 'equation-citator-exports', (state) => {
-        if (!shouldProcess(state, options)) return
-
+        if (!shouldProcess(state, options)) {
+            return
+        }
         const { tokens, Token } = state
         const equationKind = configuredEquationKind(options)
         const figureKind = configuredFigureKind(options)
         const calloutKinds = configuredCalloutKinds(options)
         const linkContext: LinkResolutionContext = {
-            markdownPath: pathnameFromUrlLike(state.env.markdownPath || ''),
-            pathMapping: options.pathMapping
+            markdownPath: normalizeMarkdownSourcePath(state.env.markdownPath || ''),
+            pathMapping: options.pathMapping,
+            logEmbedLinkRemapping: options.logEmbedLinkRemapping
         }
 
         enrichCitationRefsInTokens(tokens, linkContext)
 
         if (options.enableObsidianLinks) {
-            convertObsidianLinksInTokens(tokens, Token, linkContext, figureKind)
+            convertObsidianLinksInTokens(tokens, Token, linkContext, options)
         }
 
         for (let index = 0; index < tokens.length; index += 1) {
