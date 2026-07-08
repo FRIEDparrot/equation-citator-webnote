@@ -42,6 +42,7 @@ export type EquationCitatorMarkdownItOptions = {
     enableObsidianCallouts?: boolean;
     enableObsidianLinks?: boolean;
     logEmbedLinkRemapping?: boolean;
+    useHeadingIdSlug?: boolean;
     pathMapping: EquationCitatorPathMapping;
 };
 type FigureMetadata = {
@@ -57,3 +58,4 @@ type FigureMetadata = {
 export declare function equationCitatorMarkdownIt(md: MarkdownItPlugin, options: EquationCitatorMarkdownItOptions | undefined): void;
 export default equationCitatorMarkdownIt;
 export declare function parseEquationCitatorFigureLabel(raw?: string): FigureMetadata | null;
+export declare function buildHeadingId(rawHeading?: string): string;

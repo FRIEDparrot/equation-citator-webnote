@@ -53,6 +53,7 @@ export type EquationCitatorMarkdownItOptions = {
     enableObsidianCallouts?: boolean
     enableObsidianLinks?: boolean
     logEmbedLinkRemapping?: boolean
+    useHeadingIdSlug?: boolean
     pathMapping: EquationCitatorPathMapping
 }
 
@@ -81,6 +82,7 @@ type ParsedObsidianCallout = {
 }
 
 type ParsedObsidianLink = {
+    raw: string
     embed: boolean
     target: string
     alias: string
@@ -99,6 +101,7 @@ type LinkResolutionContext = {
     markdownPath: string
     pathMapping: EquationCitatorPathMapping
     logEmbedLinkRemapping?: boolean
+    useHeadingIdSlug?: boolean
 }
 
 const HTML_IMAGE_OPEN = '<img'
@@ -111,7 +114,7 @@ const DEFAULT_EQUATION_KIND = 'eq'
 const DEFAULT_FIGURE_KIND = 'fig'
 const DEFAULT_CALLOUT_KINDS = ['table']
 const OBSIDIAN_LINK_PATTERN = /(!?)\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g    // nosonar
-const SECTION_REFERENCE_TEXT = 'This is a section reference, click here to jump'
+const SECTION_REFERENCE_TEXT_PREFIX = 'Click here to jump to'
 
 /**
  * Install the markwon it plugin to the page instance.
@@ -128,9 +131,14 @@ export function equationCitatorMarkdownIt(md: MarkdownItPlugin, options: Equatio
         enableObsidianCallouts: false,
         enableObsidianLinks: true,
         logEmbedLinkRemapping : true,
+        useHeadingIdSlug: false,
         pathMapping: [],
         ...options
     } satisfies EquationCitatorMarkdownItOptions
+
+    if (normalizedOptions.useHeadingIdSlug) {
+        injectHeadingIds(md, normalizedOptions)
+    }
 
     if (normalizedOptions.enableFigureTargets || normalizedOptions.enableCalloutTargets) {
         wrapEquationCitatorExports(md, normalizedOptions)
@@ -288,7 +296,7 @@ function trimRepeatedEdges(value = '', edgeChar = '-'): string {
     return value.slice(start, end)
 }
 
-function headingSlug(rawHeading = ''): string {
+export function buildHeadingId(rawHeading = ''): string {
     const slug = rawHeading
         .trim()
         .toLowerCase()
@@ -302,11 +310,66 @@ function headingSlug(rawHeading = ''): string {
     return DIGITS.has(trimmedSlug[0]) ? `_${trimmedSlug}` : trimmedSlug
 }
 
-function sectionHrefFromTarget(target = ''): string {
-    if (!target.startsWith('#')) return ''
+function headingSlug(rawHeading = ''): string {
+    return buildHeadingId(rawHeading)
+}
 
-    const slug = headingSlug(target.slice(1))
-    return slug ? `#${slug}` : '#'
+function uniqueHeadingId(baseId: string, usedIds: Set<string>): string {
+    if (!usedIds.has(baseId)) {
+        usedIds.add(baseId)
+        return baseId
+    }
+
+    let index = 2
+    while (usedIds.has(`${baseId}-${index}`)) index += 1
+
+    const uniqueId = `${baseId}-${index}`
+    usedIds.add(uniqueId)
+    return uniqueId
+}
+
+function injectHeadingIds(md: MarkdownItPlugin, options: EquationCitatorMarkdownItOptions): void {
+    md.core.ruler.after('inline', 'equation-citator-heading-ids', (state) => {
+        if (!shouldProcess(state, options)) return
+
+        const usedIds = new Set<string>()
+
+        for (const token of state.tokens) {
+            if (token.type !== 'heading_open') continue
+
+            const existingId = token.attrGet('id')
+            if (existingId) usedIds.add(existingId)
+        }
+
+        for (let index = 0; index < state.tokens.length; index += 1) {
+            const token = state.tokens[index]
+            if (token.type !== 'heading_open') continue
+
+            if (token.attrGet('id')) continue
+
+            const inline = state.tokens[index + 1]
+            if (inline?.type !== 'inline') continue
+
+            const baseId = buildHeadingId(inline.content)
+            if (!baseId) continue
+
+            token.attrSet('id', uniqueHeadingId(baseId, usedIds))
+        }
+    })
+}
+
+function sectionHrefFromTarget(
+    target = '',
+    options: Pick<EquationCitatorMarkdownItOptions, 'useHeadingIdSlug'> = {}
+): string {
+    if (!options.useHeadingIdSlug) return target
+
+    const { path, hash } = splitTargetHash(target)
+    if (!hash && !target.startsWith('#')) return target
+
+    const slug = headingSlug(hash || target.slice(1))
+    const hrefHash = slug ? `#${slug}` : '#'
+    return path ? `${stripMarkdownExtension(path)}${hrefHash}` : hrefHash
 }
 
 function stripMarkdownExtension(target = ''): string {
@@ -421,7 +484,7 @@ function resolveEmbedTargetPath(
 
 // #endregion 
 
-function encodedDocsLink(targetPath = ''): string {
+function encodeDocsLink(targetPath = '', options: Pick<EquationCitatorMarkdownItOptions, 'useHeadingIdSlug'> = {}): string {
     if (isExternalTarget(targetPath)) return targetPath
 
     const { path, hash } = splitTargetHash(targetPath)
@@ -429,9 +492,20 @@ function encodedDocsLink(targetPath = ''): string {
     const encodedPath = encodePathSegments(normalized)
 
     if (!hash) return encodedPath
+    if (!options.useHeadingIdSlug) return `${encodedPath}#${hash}`
 
     const slug = headingSlug(hash)
     return slug ? `${encodedPath}#${slug}` : `${encodedPath}#`
+}
+
+function linkHrefFromObsidianTarget(target: string, context: LinkResolutionContext): string {
+    if (target.startsWith('#')) {
+        return sectionHrefFromTarget(target, context)
+    }
+
+    const normalizedTarget = stripMarkdownExtension(target).replace(/^\/+/, '')
+    const targetPath = resolveEmbedTargetPath(normalizedTarget, context.markdownPath, context.pathMapping, context)
+    return encodeDocsLink(targetPath, context)
 }
 
 function decodeHtmlAttribute(value = ''): string {
@@ -460,7 +534,7 @@ function enrichCitationRefs(rawRefs: string, context: LinkResolutionContext): st
         const resolved = resolveEmbedTargetPath(ref.file, context.markdownPath, context.pathMapping, context)
         return {
             ...ref,
-            local: encodedDocsLink(resolved)
+            local: encodeDocsLink(resolved, context)
         }
     })
 
@@ -503,6 +577,7 @@ function parseObsidianLink(raw = ''): ParsedObsidianLink | null {
     const alias = (rawAlias || target).trim()
 
     return {
+        raw,
         embed: match[1] === '!',
         target,
         alias,
@@ -721,7 +796,7 @@ function makeObsidianImageToken(Token: TokenConstructor, parsed: ParsedObsidianL
     const image = makeElementToken(Token, 'image', 'img', 0)
     const resolvedTarget = resolveEmbedTargetPath(parsed.target, context.markdownPath, context.pathMapping, context)
 
-    const isEmbedded = parsed.target.includes('#') ? 'data:,' : encodedDocsLink(resolvedTarget)
+    const isEmbedded = parsed.target.includes('#') ? 'data:,' : encodeDocsLink(resolvedTarget)
     const src = isExternalTarget(parsed.target) ? parsed.target : isEmbedded;
 
     image.content = parsed.rawAlias || parsed.target
@@ -733,7 +808,7 @@ function makeObsidianImageToken(Token: TokenConstructor, parsed: ParsedObsidianL
     if (metadata.width) image.attrSet('width', metadata.width)
 
     if (src === 'data:,') {
-        image.attrSet('data-missing-src', encodedDocsLink(resolvedTarget))
+        image.attrSet('data-missing-src', encodeDocsLink(resolvedTarget, context))
     }
 
     return image
@@ -745,29 +820,40 @@ function makeObsidianLinkTokens(Token: TokenConstructor, parsed: ParsedObsidianL
     }
 
     if (parsed.target.startsWith('#')) {
-        return makeLinkTokens(Token, sectionHrefFromTarget(parsed.target), parsed.alias)
+        if (!context.useHeadingIdSlug) return [makeTextToken(Token, parsed.raw)]
+        return makeLinkTokens(Token, sectionHrefFromTarget(parsed.target, context), parsed.alias)
     }
 
-    const normalizedTarget = stripMarkdownExtension(parsed.target).replace(/^\/+/, '')
-    const targetPath = resolveEmbedTargetPath(normalizedTarget, context.markdownPath, context.pathMapping, context)
-    const href = encodedDocsLink(targetPath)
+    const href = linkHrefFromObsidianTarget(parsed.target, context)
     return makeLinkTokens(Token, href, parsed.alias)
 }
 
-function makeSectionReferenceTokens(Token: TokenConstructor, parsed: ParsedObsidianLink): MarkdownItToken[] {
+function makeSectionReferenceTokens(
+    Token: TokenConstructor,
+    parsed: ParsedObsidianLink,
+    context: LinkResolutionContext
+): MarkdownItToken[] {
+    if (!context.useHeadingIdSlug) return [makeTextToken(Token, parsed.raw)]
+
+    const href = linkHrefFromObsidianTarget(parsed.target, context)
+    const label = `${SECTION_REFERENCE_TEXT_PREFIX} ${parsed.target}`
     return makeLinkTokens(
         Token,
-        sectionHrefFromTarget(parsed.target),
-        SECTION_REFERENCE_TEXT,
+        href,
+        label,
         'equation-citator-section-reference'
     )
 }
 
 function tokensFromObsidianLink(Token: TokenConstructor, parsed: ParsedObsidianLink, context: LinkResolutionContext): MarkdownItToken[] {
+    if (!context.useHeadingIdSlug && parsed.target.includes('#')) {
+        return [makeTextToken(Token, parsed.raw)]
+    }
+
     if (parsed.embed) {
         // TODO : better support for file#section reference 
-        if (parsed.target.startsWith('#')) {
-            return makeSectionReferenceTokens(Token, parsed)
+        if (parsed.target.includes('#')) {
+            return makeSectionReferenceTokens(Token, parsed, context)
         }
         return [makeObsidianImageToken(Token, parsed, context)]
     }
@@ -813,38 +899,6 @@ function replaceObsidianLinksInInlineToken(inline: MarkdownItToken, Token: Token
     inline.content = updatedChildren.map((token) => token.content || '').join('')
 }
 
-function singleTextObsidianEmbed(inline: MarkdownItToken | null): ParsedObsidianLink | null {
-    if (!inline) return null
-    const trimmed = inline.content.trim()
-    const parsed = parseObsidianLink(trimmed)
-    if (!parsed?.embed) return null
-    return parsed
-}
-
-function wrapSectionReferenceEmbed(
-    tokens: MarkdownItToken[],
-    paragraphIndex: number,
-    parsed: ParsedObsidianLink,
-    Token: TokenConstructor,
-    options: EquationCitatorMarkdownItOptions
-): boolean {
-    if (!parsed.target.startsWith('#') || !parsed.metadata.tag) return false
-    const figureKind = configuredFigureKind(options)
-    const figureOpen = makeElementToken(Token, 'equation_citator_figure_open', 'figure', 1)
-    const figureClose = makeElementToken(Token, 'equation_citator_figure_close', 'figure', -1)
-    addMarkerAttrs(figureOpen, figureAttrsFromMetadata({ ...parsed.metadata, tag: parsed.metadata.tag }, figureKind), 'equation-citator-figure-wrapper')
-
-    const inline = makeElementToken(Token, 'inline', '', 0)
-    inline.content = SECTION_REFERENCE_TEXT
-    inline.children = makeSectionReferenceTokens(Token, parsed)
-
-    const paragraphOpen = makeElementToken(Token, 'paragraph_open', 'p', 1)
-    const paragraphClose = makeElementToken(Token, 'paragraph_close', 'p', -1)
-
-    tokens.splice(paragraphIndex, 3, figureOpen, paragraphOpen, inline, paragraphClose, figureClose)
-    return true
-}
-
 function convertObsidianLinksInTokens(
     tokens: MarkdownItToken[],
     Token: TokenConstructor,
@@ -852,16 +906,6 @@ function convertObsidianLinksInTokens(
     options: EquationCitatorMarkdownItOptions,
 ): void {
     for (let index = 0; index < tokens.length; index += 1) {
-        const inline = paragraphInlineAt(tokens, index)
-        const standaloneEmbed = singleTextObsidianEmbed(inline)
-
-        if (standaloneEmbed?.target.startsWith('#') && wrapSectionReferenceEmbed(
-            tokens, index, standaloneEmbed, Token, options)
-        ) {
-            index += 4
-            continue
-        }
-
         const token = tokens[index]
         if (token.type !== 'inline') continue
         replaceObsidianLinksInInlineToken(token, Token, context)
@@ -1195,7 +1239,8 @@ function wrapEquationCitatorExports(md: MarkdownItPlugin, options: EquationCitat
         const linkContext: LinkResolutionContext = {
             markdownPath: normalizeMarkdownSourcePath(state.env.markdownPath || ''),
             pathMapping: options.pathMapping,
-            logEmbedLinkRemapping: options.logEmbedLinkRemapping
+            logEmbedLinkRemapping: options.logEmbedLinkRemapping,
+            useHeadingIdSlug: options.useHeadingIdSlug
         }
 
         enrichCitationRefsInTokens(tokens, linkContext)

@@ -1,5 +1,6 @@
 export {
   default,
+  buildHeadingId,
   equationCitatorMarkdownIt,
   parseEquationCitatorFigureLabel
 } from './markdown-it.js'

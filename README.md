@@ -73,6 +73,61 @@ Multiple mappings are supported. The first entry whose Markdown repo path matche
 
 For exported cross-file citations, the markdown-it plugin enriches each ref that has `file` with a resolved `local` URL inside `data-ec-refs`. The runtime uses this `local` URL for cross-file preview and navigation; it does not recompute file paths in the browser.
 
+### Heading section links
+
+By default, Equation Citator does not rewrite Obsidian section links because different site builders may use different heading ID algorithms.
+
+```js
+md.use(equationCitatorMarkdownIt, {
+  useHeadingIdSlug: false
+})
+```
+
+With `useHeadingIdSlug: false`, section targets such as `[[#Heading]]`, `[[Page#Heading]]`, `![[#Heading]]`, and `![[Page#Heading]]` are left as their original wiki-link text.
+
+Set `useHeadingIdSlug: true` only when you want Equation Citator to own the heading IDs for rendered Markdown:
+
+```js
+md.use(equationCitatorMarkdownIt, {
+  useHeadingIdSlug: true,
+  pathMapping: [
+    { '/knowledge-base': 'docs/knowledge-base' }
+  ]
+})
+```
+
+When enabled, the plugin injects IDs into rendered heading tokens without modifying Markdown source files. Existing heading IDs are preserved. Missing IDs are generated from heading text with `buildHeadingId()`, with duplicate IDs receiving `-2`, `-3`, and so on.
+
+For repeated headings, the first generated ID keeps the base slug and later generated IDs are numbered in render order:
+
+```md
+## Same Heading
+## Same Heading
+## Same Heading
+```
+
+renders with heading IDs equivalent to:
+
+```html
+<h2 id="same-heading">Same Heading</h2>
+<h2 id="same-heading-2">Same Heading</h2>
+<h2 id="same-heading-3">Same Heading</h2>
+```
+
+Section links are then rendered against those IDs:
+
+- `[[#Heading|label]]` renders as a normal link to `#heading`.
+- `[[Page#Heading|label]]` renders as a normal link to the resolved page URL plus `#heading`.
+- `![[#Heading]]` and `![[Page#Heading]]` render as a jump link with text like `Click here to jump to #Heading`.
+
+If another outline, sidebar, or heading plugin needs to use the same ID format, import the builder instead of copying the slug logic:
+
+```js
+import { buildHeadingId } from 'equation-citator'
+
+const id = buildHeadingId('My Heading')
+```
+
 ## Runtime
 
 ```js
@@ -82,4 +137,3 @@ install({ router })
 ```
 
 The runtime file should be copied into assets/runtime.js when building the docs because the generated docs pages need it in the browser. 
-
