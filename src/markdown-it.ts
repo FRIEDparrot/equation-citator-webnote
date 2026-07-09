@@ -130,7 +130,7 @@ export function equationCitatorMarkdownIt(md: MarkdownItPlugin, options: Equatio
         enableFigureCaptions: true,
         enableObsidianCallouts: false,
         enableObsidianLinks: true,
-        logEmbedLinkRemapping : true,
+        logEmbedLinkRemapping : false,
         useHeadingIdSlug: false,
         pathMapping: [],
         ...options
@@ -608,12 +608,11 @@ function figureAttrsFromMetadata(metadata: FigureMetadata, figureKind = DEFAULT_
         'data-ec-kind': figureKind,
         'data-ec-tag': metadata.tag
     }
-
+    // removed the width parameter so it can be configured by user 
     if (metadata.title) attrs['data-title'] = metadata.title
     if (metadata.desc) attrs['data-desc'] = metadata.desc
     if (metadata.width) {
         attrs['data-width'] = metadata.width
-        attrs.style = `width: ${metadata.width}px; max-width: 100%;`
     }
 
     return attrs
